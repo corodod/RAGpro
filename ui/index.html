@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>RAGRPO RAG Demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; max-width: 1100px; }
+    textarea { width: 100%; height: 90px; }
+    button { margin: 8px 0; padding: 10px 14px; cursor: pointer; }
+    .row { display: flex; gap: 16px; }
+    .col { flex: 1; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin: 10px 0; }
+    .meta { font-size: 12px; color: #444; margin-bottom: 6px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
+    .answer { white-space: pre-wrap; background: #fafafa; }
+    .muted { color: #777; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h2>RAGRPO — Demo (question → chunks → answer)</h2>
+
+  <p class="muted">
+    1) Введи вопрос → Search (получишь кандидатов).<br/>
+    2) Отметь галочками нужные чанки → Generate answer.
+  </p>
+
+  <textarea id="question" placeholder="Например: Кто совершил убийство, которое спровоцировало Первую мировую войну?"></textarea>
+  <br/>
+
+  <button id="btnSearch">Search chunks</button>
+  <button id="btnAnswer" disabled>Generate answer</button>
+
+  <div class="row">
+    <div class="col">
+      <h3>Предложенные чанки</h3>
+      <div id="candidates"></div>
+    </div>
+    <div class="col">
+      <h3>Ответ</h3>
+      <div id="answer" class="card answer">Пока нет ответа.</div>
+      <h3>Выбранные чанки</h3>
+      <div id="selected"></div>
+    </div>
+  </div>
+
+<script>
+const API = "http://127.0.0.1:8000";
+
+let lastCandidates = [];
+
+function escapeHtml(s) {
+  return (s || "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+}
+
+function renderCandidates(cands) {
+  const root = document.getElementById("candidates");
+  root.innerHTML = "";
+  cands.forEach((c, idx) => {
+    const div = document.createElement("div");
+    div.className = "card";
+    div.innerHTML = `
+      <label>
+        <input type="checkbox" class="chk" data-id="${c.chunk_id}">
+        <b>#${idx+1}</b>
+      </label>
+      <div class="meta">
+        <span class="mono">chunk_id: ${escapeHtml(c.chunk_id)}</span><br/>
+        bm25: ${c.bm25_score?.toFixed?.(3) ?? c.bm25_score} |
+        dense: ${c.dense_score?.toFixed?.(3) ?? c.dense_score}
+      </div>
+      <div><b>${escapeHtml(c.title || "")}</b></div>
+      <div>${escapeHtml((c.text || "").slice(0, 900))}${(c.text||"").length>900 ? "..." : ""}</div>
+    `;
+    root.appendChild(div);
+  });
+}
+
+function getSelectedChunkIds() {
+  return Array.from(document.querySelectorAll(".chk"))
+    .filter(x => x.checked)
+    .map(x => x.getAttribute("data-id"));
+}
+
+async function onSearch() {
+  const q = document.getElementById("question").value.trim();
+  if (!q) return;
+
+  document.getElementById("btnAnswer").disabled = true;
+  document.getElementById("answer").innerText = "Ищу чанки...";
+
+  const resp = await fetch(`${API}/search`, {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({question: q, bm25_top_n: 100, top_k: 8})
+  });
+
+  const data = await resp.json();
+  lastCandidates = data.candidates || [];
+
+  renderCandidates(lastCandidates);
+  document.getElementById("answer").innerText = "Чанки готовы. Выбери нужные и нажми Generate answer.";
+  document.getElementById("btnAnswer").disabled = false;
+  document.getElementById("selected").innerHTML = "";
+}
+
+async function onAnswer() {
+  const q = document.getElementById("question").value.trim();
+  const ids = getSelectedChunkIds();
+
+  if (!q) return;
+  if (ids.length === 0) {
+    alert("Выбери хотя бы один чанк.");
+    return;
+  }
+
+  document.getElementById("answer").innerText = "Генерирую ответ...";
+  document.getElementById("selected").innerHTML = "";
+
+  const resp = await fetch(`${API}/answer`, {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({question: q, selected_chunk_ids: ids})
+  });
+
+  const data = await resp.json();
+  document.getElementById("answer").innerText = data.answer || "(пусто)";
+
+  const sel = document.getElementById("selected");
+  (data.selected_chunks || []).forEach((c, idx) => {
+    const div = document.createElement("div");
+    div.className = "card";
+    div.innerHTML = `
+      <div class="meta"><b>${idx+1}</b> <span class="mono">${escapeHtml(c.chunk_id)}</span></div>
+      <div><b>${escapeHtml(c.title || "")}</b></div>
+      <div>${escapeHtml((c.text || "").slice(0, 900))}${(c.text||"").length>900 ? "..." : ""}</div>
+    `;
+    sel.appendChild(div);
+  });
+}
+
+document.getElementById("btnSearch").addEventListener("click", onSearch);
+document.getElementById("btnAnswer").addEventListener("click", onAnswer);
+</script>
+</body>
+</html>
