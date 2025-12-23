@@ -29,7 +29,7 @@ Thumbs.db
 # =========================
 data/raw/
 data/processed/
-#data/indexes/
+data/indexes/
 
 # Если хочешь оставить структуру папок
 !data/raw/.gitkeep
