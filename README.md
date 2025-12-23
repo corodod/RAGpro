@@ -1,6 +1,11 @@
-Запуск:
+запуск
+Windows / мощный ПК
+set GEN_BACKEND=cuda
+python -m uvicorn api.app:app
 
-python -m uvicorn api.app:app --reload
+MacBook M1
+export GEN_BACKEND=mps
+python -m uvicorn api.app:app
 
 по адресу:
 

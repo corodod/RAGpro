@@ -14,16 +14,18 @@ class DenseRetriever:
         chunks_path: Path,
         index_path: Path,
         meta_path: Path,
-        model_name: str = "jinaai/jina-embeddings-v3",
-        embedding_dim: int = 768,
+        model_name: str = "intfloat/multilingual-e5-large",
+        embedding_dim: int = 1024,
     ):
         self.chunks_path = chunks_path
         self.index_path = index_path
         self.meta_path = meta_path
         self.embedding_dim = embedding_dim
 
-        self.model = SentenceTransformer(model_name, trust_remote_code=True)
+        # ❗ Никакого trust_remote_code
+        self.model = SentenceTransformer(model_name)
         self.index = None
+
         self.chunk_ids = []
         self.titles = []
         self.texts = []
@@ -34,7 +36,6 @@ class DenseRetriever:
 
     def load(self):
         self.index = faiss.read_index(str(self.index_path))
-
         with open(self.meta_path, encoding="utf-8") as f:
             meta = json.load(f)
 
@@ -43,13 +44,8 @@ class DenseRetriever:
         self.texts = meta["texts"]
 
     def search(self, query: str, top_k: int = 10) -> List[Dict]:
-        qv = self.model.encode(
-            [query],
-            task="retrieval.query",
-            truncate_dim=self.embedding_dim,
-            convert_to_numpy=True,
-        ).astype("float32")
-
+        q = f"query: {query}"
+        qv = self.model.encode([q], convert_to_numpy=True).astype("float32")
         qv = self._normalize(qv)
 
         scores, idxs = self.index.search(qv, top_k)
@@ -73,19 +69,14 @@ class DenseRetriever:
     ) -> List[Dict]:
         id_map = {cid: i for i, cid in enumerate(self.chunk_ids)}
         positions = [id_map[cid] for cid in candidate_chunk_ids if cid in id_map]
-
         if not positions:
             return []
 
         cand_vecs = np.vstack([self.index.reconstruct(p) for p in positions])
         cand_vecs = self._normalize(cand_vecs)
 
-        qv = self.model.encode(
-            [query],
-            task="retrieval.query",
-            truncate_dim=self.embedding_dim,
-            convert_to_numpy=True,
-        ).astype("float32")
+        q = f"query: {query}"
+        qv = self.model.encode([q], convert_to_numpy=True).astype("float32")
         qv = self._normalize(qv)
 
         scores = cand_vecs @ qv[0]

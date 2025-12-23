@@ -34,13 +34,13 @@ data/processed/
 # Если хочешь оставить структуру папок
 !data/raw/.gitkeep
 !data/processed/.gitkeep
-#!data/indexes/.gitkeep
+!data/indexes/.gitkeep
 
 # =========================
 # Model / Index files
 # =========================
-#*.pkl
-#*.index
+*.pkl
+*.index
 
 # =========================
 # Logs / cache

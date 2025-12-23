@@ -1,12 +1,12 @@
-# api/app.py
 from __future__ import annotations
-from fastapi.responses import HTMLResponse
 
+import os
 from pathlib import Path
 from typing import List, Dict, Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from rag.bm25 import BM25Retriever
@@ -15,13 +15,14 @@ from rag.hybrid import HybridRetriever
 from rag.generator import AnswerGenerator, GeneratorConfig
 
 
-# ---------- paths ----------
+# ================== PATHS ==================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CHUNKS_PATH = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
 INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
+UI_PATH = PROJECT_ROOT / "ui" / "index.html"
 
 
-# ---------- load retrievers once ----------
+# ================== LOAD RETRIEVERS (ONCE) ==================
 bm25 = BM25Retriever.load(INDEX_DIR)
 
 dense = DenseRetriever(
@@ -35,31 +36,32 @@ dense.load()
 hybrid = HybridRetriever(bm25, dense)
 
 
-# ---------- load generator once ----------
-# Можно настроить модель тут
+# ================== LOAD GENERATOR (ONCE) ==================
+backend = os.getenv("GEN_BACKEND", "cpu")
+
+print(f"[API] GEN_BACKEND={backend}")
+
 gen_cfg = GeneratorConfig(
-    model_name="Qwen/Qwen2.5-1.5B-Instruct",
-    device="auto",
-    dtype="auto",
-    max_new_tokens=220,
-    temperature=0.2,
-    top_p=0.9,
+    backend=backend,
+    max_new_tokens=80,
 )
+
 generator = AnswerGenerator(gen_cfg)
 
 
-# ---------- api ----------
+# ================== FASTAPI APP ==================
 app = FastAPI(title="RAGRPO Demo")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # для локальной разработки
+    allow_origins=["*"],  # OK для локальной разработки
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# ================== SCHEMAS ==================
 class SearchRequest(BaseModel):
     question: str
     bm25_top_n: int = 100
@@ -82,22 +84,30 @@ class AnswerResponse(BaseModel):
     answer: str
 
 
+# ================== ROUTES ==================
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest):
-    candidates = hybrid.search(req.question, bm25_top_n=req.bm25_top_n, top_k=req.top_k)
-    return {"question": req.question, "candidates": candidates}
+    candidates = hybrid.search(
+        req.question,
+        bm25_top_n=req.bm25_top_n,
+        top_k=req.top_k,
+    )
+    return {
+        "question": req.question,
+        "candidates": candidates,
+    }
 
 
 @app.post("/answer", response_model=AnswerResponse)
 def answer(req: AnswerRequest):
-    # берём чанки по id из dense meta (там texts/titles/chunk_ids уже в памяти)
+    # map chunk_id -> position
     id_to_pos = {cid: i for i, cid in enumerate(dense.chunk_ids)}
 
-    selected_chunks = []
+    selected_chunks: List[Dict[str, Any]] = []
     for cid in req.selected_chunk_ids:
-        if cid not in id_to_pos:
+        pos = id_to_pos.get(cid)
+        if pos is None:
             continue
-        pos = id_to_pos[cid]
         selected_chunks.append(
             {
                 "chunk_id": dense.chunk_ids[pos],
@@ -106,16 +116,14 @@ def answer(req: AnswerRequest):
             }
         )
 
-    ans = generator.generate(req.question, selected_chunks)
+    answer_text = generator.generate(req.question, selected_chunks)
 
     return {
         "question": req.question,
         "selected_chunks": selected_chunks,
-        "answer": ans,
+        "answer": answer_text,
     }
 
-# ---------- UI ----------
-UI_PATH = PROJECT_ROOT / "ui" / "index.html"
 
 @app.get("/", response_class=HTMLResponse)
 def index():
