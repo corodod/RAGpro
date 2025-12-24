@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from rag.bm25 import BM25Retriever
 from rag.dense import DenseRetriever
 from rag.hybrid import HybridRetriever
+from rag.reranker import CrossEncoderReranker
 from rag.generator import AnswerGenerator, GeneratorConfig
 
 
@@ -34,13 +35,24 @@ dense = DenseRetriever(
 )
 dense.load()
 
-hybrid = HybridRetriever(bm25, dense)
-
-
-# ---------- GENERATOR ----------
 backend = os.getenv("GEN_BACKEND", "cpu")
 print(f"[API] GEN_BACKEND={backend}")
 
+# Cross-encoder:
+# CUDA — на мощном ПК
+# CPU — на Mac
+ce_device = "cuda" if backend == "cuda" else "cpu"
+
+reranker = CrossEncoderReranker(device=ce_device)
+
+hybrid = HybridRetriever(
+    bm25=bm25,
+    dense=dense,
+    reranker=reranker,
+)
+
+
+# ---------- GENERATOR ----------
 gen_cfg = GeneratorConfig(
     backend=backend,
     max_new_tokens=80,
@@ -64,8 +76,8 @@ app.add_middleware(
 # ---------- SCHEMAS ----------
 class SearchRequest(BaseModel):
     question: str
-    bm25_top_n: int = 100
-    top_k: int = 8
+    bm25_top_n: int = 200
+    top_k: int = 12
 
 
 class SearchResponse(BaseModel):
@@ -88,7 +100,7 @@ class AnswerResponse(BaseModel):
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest):
     candidates = hybrid.search(
-        req.question,
+        query=req.question,
         bm25_top_n=req.bm25_top_n,
         top_k=req.top_k,
     )

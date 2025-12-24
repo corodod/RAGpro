@@ -91,7 +91,7 @@ async function onSearch() {
   const resp = await fetch(`${API}/search`, {
     method: "POST",
     headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({question: q, bm25_top_n: 100, top_k: 8})
+    body: JSON.stringify({question: q, bm25_top_n: 100, top_k: 12})
   });
 
   const data = await resp.json();
