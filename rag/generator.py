@@ -4,61 +4,73 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    pipeline,
+)
 
 
+# ================= CONFIG =================
 @dataclass
 class GeneratorConfig:
-    backend: str  # "cuda" | "mps" | "cpu"
-    max_new_tokens: int = 80
-    temperature: float = 0.0
-    top_p: float = 1.0
+    backend: str  # "cuda" | "cpu"
+    max_new_tokens: int = 120
+    temperature: float = 0.7
     repetition_penalty: float = 1.12
 
 
+# ================= GENERATOR =================
 class AnswerGenerator:
     def __init__(self, cfg: Optional[GeneratorConfig] = None):
         self.cfg = cfg or GeneratorConfig(backend="cpu")
 
-        # ---------- backend & model selection ----------
+        # -------- CUDA → QWEN --------
         if self.cfg.backend == "cuda" and torch.cuda.is_available():
+            self.scenario = "qwen"
             self.device = torch.device("cuda")
             self.model_name = "Qwen/Qwen2.5-3B-Instruct"
             self.dtype = torch.float16
 
+        # -------- CPU / MAC → TINYLLAMA --------
         else:
-            # Mac (MPS) или обычный CPU
-            if torch.backends.mps.is_available() and self.cfg.backend == "mps":
-                self.device = torch.device("mps")
-            else:
-                self.device = torch.device("cpu")
-
-            self.model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+            self.scenario = "tinyllama"
+            self.device = torch.device("cpu")
+            self.model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
             self.dtype = torch.float32
 
+            # 🔴 КРИТИЧНО ДЛЯ MAC (segfault fix)
+            torch.set_num_threads(1)
+
         print(
-            f"[Generator] backend={self.cfg.backend} "
+            f"[Generator] scenario={self.scenario} "
             f"model={self.model_name} device={self.device}"
         )
 
-        # ---------- tokenizer ----------
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name,
-            use_fast=True,
-        )
+        # -------- LOAD TOKENIZER --------
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
-        # ---------- model ----------
+        # -------- LOAD MODEL --------
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             torch_dtype=self.dtype,
-        ).to(self.device)
+        )
 
-        self.model.eval()
+        # -------- PIPELINE ТОЛЬКО ДЛЯ TINYLLAMA --------
+        if self.scenario == "tinyllama":
+            self.pipe = pipeline(
+                "text-generation",
+                model=self.model,
+                tokenizer=self.tokenizer,
+                device=-1,  # CPU only
+            )
+        else:
+            self.model.to(self.device)
+            self.model.eval()
+            if self.tokenizer.pad_token_id is None:
+                self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
-
-    # ---------- context ----------
+    # ================= CONTEXT =================
     @staticmethod
     def build_context(chunks: List[Dict], max_chars: int = 4000) -> str:
         parts, total = [], 0
@@ -71,8 +83,39 @@ class AnswerGenerator:
             total += len(block) + 2
         return "\n\n".join(parts)
 
-    # ---------- generation ----------
+    # ================= PUBLIC API =================
     def generate(self, question: str, chunks: List[Dict]) -> str:
+        if self.scenario == "tinyllama":
+            return self._generate_tinyllama(question, chunks)
+        else:
+            return self._generate_qwen(question, chunks)
+
+    # ================= TINYLLAMA =================
+    def _generate_tinyllama(self, question: str, chunks: List[Dict]) -> str:
+        context = self.build_context(chunks)
+
+        prompt = (
+            "Answer strictly using the facts from the context below.\n"
+            "If the answer is not present, say:\n"
+            "Not enough information in the context.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question:\n{question}\n\n"
+            "Answer:"
+        ).strip()
+
+        out = self.pipe(
+            prompt,
+            max_new_tokens=self.cfg.max_new_tokens,
+            do_sample=True,
+            temperature=self.cfg.temperature,
+            return_full_text=False,
+            pad_token_id=self.tokenizer.eos_token_id,
+        )[0]["generated_text"]
+
+        return out.strip()
+
+    # ================= QWEN =================
+    def _generate_qwen(self, question: str, chunks: List[Dict]) -> str:
         context = self.build_context(chunks)
 
         system = (
