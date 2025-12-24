@@ -1,5 +1,4 @@
 # rag/hybrid.py
-from pathlib import Path
 from typing import List, Dict, Optional
 
 from rag.bm25 import BM25Retriever
@@ -20,16 +19,17 @@ class HybridRetriever:
 
     def search(
         self,
+        *,
         query: str,
-        bm25_top_n: int = 200,
-        dense_top_n: int = 50,
-        top_k: int = 12,
+        bm25_top_n: int,
+        dense_top_n: int,
+        final_top_k: int,
     ) -> List[Dict]:
-        # 1️⃣ BM25 — high recall
+        # 1️⃣ BM25 — candidate generation
         bm25_res = self.bm25.search(query, top_k=bm25_top_n)
         candidate_ids = [r["chunk_id"] for r in bm25_res]
 
-        # 2️⃣ Dense rerank — semantic filtering
+        # 2️⃣ Dense — semantic filtering
         dense_res = self.dense.rerank_candidates(
             query,
             candidate_ids,
@@ -41,44 +41,15 @@ class HybridRetriever:
         for r in dense_res:
             r["bm25_score"] = bm25_scores.get(r["chunk_id"], 0.0)
 
-        # 3️⃣ Cross-encoder — final relevance
+        # 3️⃣ Cross-encoder scoring (без отбора)
         if self.reranker is not None:
-            dense_res = self.reranker.rerank(
-                query,
+            dense_res = self.reranker.score(query, dense_res)
+
+            dense_res = sorted(
                 dense_res,
-                top_k=top_k,
+                key=lambda x: x["ce_score"],
+                reverse=True,
             )
-        else:
-            dense_res = dense_res[:top_k]
 
-        return dense_res
-
-
-if __name__ == "__main__":
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
-    CHUNKS = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
-
-    bm25 = BM25Retriever.load(INDEX_DIR)
-
-    dense = DenseRetriever(
-        chunks_path=CHUNKS,
-        index_path=INDEX_DIR / "faiss.index",
-        meta_path=INDEX_DIR / "faiss_meta.json",
-        embedding_dim=768,
-    )
-    dense.load()
-
-    reranker = CrossEncoderReranker(device="cpu")
-
-    hybrid = HybridRetriever(bm25, dense, reranker=reranker)
-
-    q = "кто совершил убийство, которое спровоцировало первую мировую войну"
-    for r in hybrid.search(q, top_k=12):
-        print("=" * 80)
-        print(
-            "BM25:", r["bm25_score"],
-            "DENSE:", r["dense_score"],
-            "CE:", r.get("ce_score"),
-        )
-        print(r["text"][:500])
+        # 4️⃣ Финальный top-k
+        return dense_res[:final_top_k]

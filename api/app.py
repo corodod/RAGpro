@@ -17,6 +17,15 @@ from rag.reranker import CrossEncoderReranker
 from rag.generator import AnswerGenerator, GeneratorConfig
 
 
+# ============================== CONFIG ==================================
+
+BM25_TOP_N = 300          # для агрессивного eval: 300–500
+DENSE_TOP_N = 100          # для агрессивного eval: 100
+FINAL_TOP_K = 20          # для Recall@20 → ставь 20
+
+# ========================================================================
+
+
 # ---------- PATHS ----------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CHUNKS_PATH = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
@@ -31,18 +40,13 @@ dense = DenseRetriever(
     chunks_path=CHUNKS_PATH,
     index_path=INDEX_DIR / "faiss.index",
     meta_path=INDEX_DIR / "faiss_meta.json",
-    embedding_dim=768,
 )
 dense.load()
 
 backend = os.getenv("GEN_BACKEND", "cpu")
 print(f"[API] GEN_BACKEND={backend}")
 
-# Cross-encoder:
-# CUDA — на мощном ПК
-# CPU — на Mac
 ce_device = "cuda" if backend == "cuda" else "cpu"
-
 reranker = CrossEncoderReranker(device=ce_device)
 
 hybrid = HybridRetriever(
@@ -57,7 +61,6 @@ gen_cfg = GeneratorConfig(
     backend=backend,
     max_new_tokens=80,
 )
-
 generator = AnswerGenerator(gen_cfg)
 
 
@@ -76,8 +79,6 @@ app.add_middleware(
 # ---------- SCHEMAS ----------
 class SearchRequest(BaseModel):
     question: str
-    bm25_top_n: int = 200
-    top_k: int = 12
 
 
 class SearchResponse(BaseModel):
@@ -101,8 +102,9 @@ class AnswerResponse(BaseModel):
 def search(req: SearchRequest):
     candidates = hybrid.search(
         query=req.question,
-        bm25_top_n=req.bm25_top_n,
-        top_k=req.top_k,
+        bm25_top_n=BM25_TOP_N,
+        dense_top_n=DENSE_TOP_N,
+        final_top_k=FINAL_TOP_K,
     )
     return {
         "question": req.question,
