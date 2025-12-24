@@ -66,7 +66,8 @@ function renderCandidates(cands) {
       <div class="meta">
         <span class="mono">chunk_id: ${escapeHtml(c.chunk_id)}</span><br/>
         bm25: ${c.bm25_score?.toFixed?.(3) ?? c.bm25_score} |
-        dense: ${c.dense_score?.toFixed?.(3) ?? c.dense_score}
+        dense: ${c.dense_score?.toFixed?.(3) ?? c.dense_score} |
+        ce: ${c.ce_score?.toFixed?.(3) ?? c.ce_score}
       </div>
       <div><b>${escapeHtml(c.title || "")}</b></div>
       <div>${escapeHtml((c.text || "").slice(0, 900))}${(c.text||"").length>900 ? "..." : ""}</div>
