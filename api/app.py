@@ -22,7 +22,7 @@ from rag.generator import AnswerGenerator, GeneratorConfig
 BM25_TOP_N = 300          # для агрессивного eval: 300–500
 DENSE_TOP_N = 100          # для агрессивного eval: 100
 FINAL_TOP_K = 20          # для Recall@20 → ставь 20
-
+MAX_NEW_TOKENS = 80
 # ========================================================================
 
 
@@ -59,7 +59,7 @@ hybrid = HybridRetriever(
 # ---------- GENERATOR ----------
 gen_cfg = GeneratorConfig(
     backend=backend,
-    max_new_tokens=80,
+    max_new_tokens=MAX_NEW_TOKENS,
 )
 generator = AnswerGenerator(gen_cfg)
 
