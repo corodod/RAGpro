@@ -1,3 +1,4 @@
+# api/app.py
 from __future__ import annotations
 
 import os
@@ -15,14 +16,14 @@ from rag.hybrid import HybridRetriever
 from rag.generator import AnswerGenerator, GeneratorConfig
 
 
-# ================== PATHS ==================
+# ---------- PATHS ----------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CHUNKS_PATH = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
 INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
 UI_PATH = PROJECT_ROOT / "ui" / "index.html"
 
 
-# ================== LOAD RETRIEVERS (ONCE) ==================
+# ---------- RETRIEVERS ----------
 bm25 = BM25Retriever.load(INDEX_DIR)
 
 dense = DenseRetriever(
@@ -36,9 +37,8 @@ dense.load()
 hybrid = HybridRetriever(bm25, dense)
 
 
-# ================== LOAD GENERATOR (ONCE) ==================
+# ---------- GENERATOR ----------
 backend = os.getenv("GEN_BACKEND", "cpu")
-
 print(f"[API] GEN_BACKEND={backend}")
 
 gen_cfg = GeneratorConfig(
@@ -49,19 +49,19 @@ gen_cfg = GeneratorConfig(
 generator = AnswerGenerator(gen_cfg)
 
 
-# ================== FASTAPI APP ==================
+# ---------- FASTAPI ----------
 app = FastAPI(title="RAGRPO Demo")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # OK для локальной разработки
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ================== SCHEMAS ==================
+# ---------- SCHEMAS ----------
 class SearchRequest(BaseModel):
     question: str
     bm25_top_n: int = 100
@@ -84,7 +84,7 @@ class AnswerResponse(BaseModel):
     answer: str
 
 
-# ================== ROUTES ==================
+# ---------- ROUTES ----------
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest):
     candidates = hybrid.search(
@@ -100,10 +100,9 @@ def search(req: SearchRequest):
 
 @app.post("/answer", response_model=AnswerResponse)
 def answer(req: AnswerRequest):
-    # map chunk_id -> position
     id_to_pos = {cid: i for i, cid in enumerate(dense.chunk_ids)}
 
-    selected_chunks: List[Dict[str, Any]] = []
+    selected_chunks = []
     for cid in req.selected_chunk_ids:
         pos = id_to_pos.get(cid)
         if pos is None:

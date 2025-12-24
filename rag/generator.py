@@ -1,3 +1,4 @@
+# rag/generator.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Optional
@@ -8,7 +9,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 @dataclass
 class GeneratorConfig:
-    backend: str
+    backend: str  # "cuda" | "mps" | "cpu"
     max_new_tokens: int = 80
     temperature: float = 0.0
     top_p: float = 1.0
@@ -19,43 +20,37 @@ class AnswerGenerator:
     def __init__(self, cfg: Optional[GeneratorConfig] = None):
         self.cfg = cfg or GeneratorConfig(backend="cpu")
 
-        # -------- backend detection --------
+        # ---------- backend & model selection ----------
         if self.cfg.backend == "cuda" and torch.cuda.is_available():
             self.device = torch.device("cuda")
-            self.model_name = "Qwen/Qwen2.5-7B-Instruct"
+            self.model_name = "Qwen/Qwen2.5-3B-Instruct"
             self.dtype = torch.float16
 
-        elif self.cfg.backend in {"mps", "cpu"}:
-            self.device = torch.device(
-                "mps" if torch.backends.mps.is_available() else "cpu"
-            )
-            self.model_name = "microsoft/phi-3.5-mini-instruct"
-            self.dtype = torch.float32
-
         else:
-            raise RuntimeError(f"Unsupported backend: {self.cfg.backend}")
+            # Mac (MPS) или обычный CPU
+            if torch.backends.mps.is_available() and self.cfg.backend == "mps":
+                self.device = torch.device("mps")
+            else:
+                self.device = torch.device("cpu")
+
+            self.model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+            self.dtype = torch.float32
 
         print(
             f"[Generator] backend={self.cfg.backend} "
             f"model={self.model_name} device={self.device}"
         )
 
-        # -------- load model --------
+        # ---------- tokenizer ----------
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
             use_fast=True,
-            trust_remote_code=True,
         )
 
-        # self.model = AutoModelForCausalLM.from_pretrained(
-        #     self.model_name,
-        #     torch_dtype=self.dtype,
-        #     trust_remote_code=True,
-        # ).to(self.device)
+        # ---------- model ----------
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             torch_dtype=self.dtype,
-            trust_remote_code=(self.model_name.startswith("microsoft/")),
         ).to(self.device)
 
         self.model.eval()
@@ -63,6 +58,7 @@ class AnswerGenerator:
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
+    # ---------- context ----------
     @staticmethod
     def build_context(chunks: List[Dict], max_chars: int = 4000) -> str:
         parts, total = [], 0
@@ -75,6 +71,7 @@ class AnswerGenerator:
             total += len(block) + 2
         return "\n\n".join(parts)
 
+    # ---------- generation ----------
     def generate(self, question: str, chunks: List[Dict]) -> str:
         context = self.build_context(chunks)
 
