@@ -117,11 +117,10 @@ class AnswerGenerator:
     # ================= QWEN =================
     def _generate_qwen(self, question: str, chunks: List[Dict]) -> str:
         context = self.build_context(chunks)
-
+        # "НЕ добавляй объяснений.\n"
         system = (
             "Ты — система извлечения фактов.\n"
             "Отвечай ТОЛЬКО фактами из контекста.\n"
-            "НЕ добавляй объяснений.\n"
             "Если ответа нет — напиши ровно:\n"
             "В контексте нет достаточной информации."
         )
@@ -129,7 +128,7 @@ class AnswerGenerator:
         user = (
             f"Контекст:\n{context}\n\n"
             f"Вопрос:\n{question}\n\n"
-            "Ответ (1–2 предложения):"
+            "Ответ (2–3 предложения):"
         )
 
         messages = [
