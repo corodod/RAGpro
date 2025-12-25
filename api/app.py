@@ -28,6 +28,9 @@ MAX_NEW_TOKENS = 80
 # rewrite config
 N_REWRITES = 2
 MIN_COSINE = 0.75
+
+# cross-encoder strong answer gate
+CE_STRONG_THRESHOLD = 1.25   # ← 1.2–1.5
 # ========================================================================
 
 
@@ -60,6 +63,7 @@ hybrid = HybridRetriever(
     bm25=bm25,
     dense=dense,
     reranker=reranker,
+    ce_strong_threshold = CE_STRONG_THRESHOLD,
 )
 
 

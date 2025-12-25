@@ -12,10 +12,12 @@ class HybridRetriever:
         bm25: BM25Retriever,
         dense: DenseRetriever,
         reranker: Optional[CrossEncoderReranker] = None,
+        ce_strong_threshold: float | None = None,
     ):
         self.bm25 = bm25
         self.dense = dense
         self.reranker = reranker
+        self.ce_strong_threshold = ce_strong_threshold
 
     def search(
         self,
@@ -83,6 +85,21 @@ class HybridRetriever:
                 reverse=True,
             )
 
+            # =================================================
+            # 🔥 STRONG ANSWER GATE
+            # =================================================
+            if self.ce_strong_threshold is not None and dense_res:
+                max_ce = dense_res[0]["ce_score"]
+
+                if max_ce >= self.ce_strong_threshold:
+                    strong = [
+                        r for r in dense_res
+                        if r["ce_score"] >= self.ce_strong_threshold
+                    ]
+
+                    # защитный минимум
+                    if strong:
+                        return strong
         # =====================================================
         # 5️⃣ Final top-k
         # =====================================================
