@@ -15,14 +15,19 @@ from rag.dense import DenseRetriever
 from rag.hybrid import HybridRetriever
 from rag.reranker import CrossEncoderReranker
 from rag.generator import AnswerGenerator, GeneratorConfig
+from rag.rewrite import QueryRewriter
 
 
 # ============================== CONFIG ==================================
 
-BM25_TOP_N = 300          # для агрессивного eval: 300–500
-DENSE_TOP_N = 100          # для агрессивного eval: 100
-FINAL_TOP_K = 20          # для Recall@20 → ставь 20
+BM25_TOP_N = 300          # агрессивный recall
+DENSE_TOP_N = 100         # dense filtering
+FINAL_TOP_K = 20          # Recall@20
 MAX_NEW_TOKENS = 80
+
+# rewrite config
+N_REWRITES = 2
+MIN_COSINE = 0.75
 # ========================================================================
 
 
@@ -31,6 +36,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CHUNKS_PATH = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
 INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
 UI_PATH = PROJECT_ROOT / "ui" / "index.html"
+
+# ---------- BACKEND ----------
+backend = os.getenv("GEN_BACKEND", "cpu")
+print(f"[API] GEN_BACKEND={backend}")
+
+device = "cuda" if backend == "cuda" else "cpu"
 
 
 # ---------- RETRIEVERS ----------
@@ -43,16 +54,20 @@ dense = DenseRetriever(
 )
 dense.load()
 
-backend = os.getenv("GEN_BACKEND", "cpu")
-print(f"[API] GEN_BACKEND={backend}")
-
-ce_device = "cuda" if backend == "cuda" else "cpu"
-reranker = CrossEncoderReranker(device=ce_device)
+reranker = CrossEncoderReranker(device=device)
 
 hybrid = HybridRetriever(
     bm25=bm25,
     dense=dense,
     reranker=reranker,
+)
+
+
+# ---------- QUERY REWRITER ----------
+rewriter = QueryRewriter(
+    llm_device=device,
+    n_rewrites=N_REWRITES,
+    min_cosine=MIN_COSINE,
 )
 
 
@@ -84,6 +99,7 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     question: str
     candidates: List[Dict[str, Any]]
+    rewrites: List[str]
 
 
 class AnswerRequest(BaseModel):
@@ -100,14 +116,25 @@ class AnswerResponse(BaseModel):
 # ---------- ROUTES ----------
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest):
+    rewrites = rewriter.rewrite(req.question)
+
     candidates = hybrid.search(
         query=req.question,
+        rewrites=rewrites,          # ✅ ВОТ ЭТОГО НЕ ХВАТАЛО
         bm25_top_n=BM25_TOP_N,
         dense_top_n=DENSE_TOP_N,
         final_top_k=FINAL_TOP_K,
     )
+
+    # debug logs
+    print("=" * 80)
+    print("Q0:", req.question)
+    print("Rewrites:", rewrites)
+    print("Top chunk_ids:", [c["chunk_id"] for c in candidates[:5]])
+
     return {
         "question": req.question,
+        "rewrites": rewrites,
         "candidates": candidates,
     }
 
