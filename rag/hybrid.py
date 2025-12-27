@@ -1,4 +1,6 @@
 # rag/hybrid.py
+from __future__ import annotations
+
 from typing import List, Dict, Optional, Iterable
 
 from rag.bm25 import BM25Retriever
@@ -7,17 +9,33 @@ from rag.reranker import CrossEncoderReranker
 
 
 class HybridRetriever:
+    """
+    Single-step retrieval module.
+
+    Responsibilities:
+    1) BM25(q0 + rewrites)
+    2) Dense rerank (q0 only)
+    3) Cross-Encoder scoring (q0 only)
+
+    Does NOT handle:
+    - entity expansion
+    - coverage selection
+    - multi-step logic
+    """
+
     def __init__(
         self,
         bm25: BM25Retriever,
         dense: DenseRetriever,
         reranker: Optional[CrossEncoderReranker] = None,
-        ce_strong_threshold: float | None = None,
     ):
         self.bm25 = bm25
         self.dense = dense
         self.reranker = reranker
-        self.ce_strong_threshold = ce_strong_threshold
+
+    # =========================================================
+    # Public API
+    # =========================================================
 
     def search(
         self,
@@ -27,21 +45,64 @@ class HybridRetriever:
         bm25_top_n: int,
         dense_top_n: int,
         final_top_k: int,
+        t_strong: Optional[float] = None,
+    ) -> List[Dict]:
+        """
+        Base retrieval with optional confidence gate.
+
+        If t_strong is provided and max CE >= t_strong:
+            returns ONLY strong chunks
+        """
+
+        candidates = self._base_retrieval(
+            query=query,
+            rewrites=rewrites,
+            bm25_top_n=bm25_top_n,
+            dense_top_n=dense_top_n,
+        )
+
+        if not candidates:
+            return []
+
+        # -----------------------------
+        # Confidence gate (CE arbiter)
+        # -----------------------------
+        if t_strong is not None and self.reranker is not None:
+            max_ce = candidates[0].get("ce_score")
+
+            if max_ce is not None and max_ce >= t_strong:
+                strong = [
+                    r for r in candidates
+                    if r.get("ce_score", -1e9) >= t_strong
+                ]
+                if strong:
+                    return strong[:final_top_k]
+
+        return candidates[:final_top_k]
+
+    # =========================================================
+    # Internal
+    # =========================================================
+
+    def _base_retrieval(
+        self,
+        *,
+        query: str,
+        rewrites: Iterable[str],
+        bm25_top_n: int,
+        dense_top_n: int,
     ) -> List[Dict]:
 
-        # =====================================================
-        # 1️⃣ BM25 aggregation (q0 ≠ rewrites)
-        # =====================================================
-        bm25_scores = {}
-        bm25_hits = {}
+        bm25_scores: dict[str, float] = {}
+        bm25_hits: dict[str, int] = {}
 
-        # --- q0: основной скор ---
+        # --- BM25(q0) ---
         for r in self.bm25.search(query, top_k=bm25_top_n):
             cid = r["chunk_id"]
             bm25_scores[cid] = r["bm25_score"]
             bm25_hits[cid] = bm25_hits.get(cid, 0) + 1
 
-        # --- rewrites: только факт попадания ---
+        # --- BM25(rewrites) — recall only ---
         for q in rewrites:
             for r in self.bm25.search(q, top_k=bm25_top_n):
                 cid = r["chunk_id"]
@@ -50,9 +111,6 @@ class HybridRetriever:
         if not bm25_hits:
             return []
 
-        # =====================================================
-        # 2️⃣ Candidate filtering (anti-noise)
-        # =====================================================
         candidate_ids = [
             cid for cid in bm25_hits
             if bm25_scores.get(cid, 0.0) > 0.0 or bm25_hits[cid] >= 2
@@ -61,9 +119,7 @@ class HybridRetriever:
         if not candidate_ids:
             return []
 
-        # =====================================================
-        # 3️⃣ Dense rerank (ONLY q0)
-        # =====================================================
+        # --- Dense rerank (q0 only) ---
         dense_res = self.dense.rerank_candidates(
             query,
             candidate_ids,
@@ -71,36 +127,13 @@ class HybridRetriever:
         )
 
         for r in dense_res:
-            r["bm25_score"] = bm25_scores.get(r["chunk_id"], 0.0)
-            r["bm25_hits"] = bm25_hits.get(r["chunk_id"], 0)
+            cid = r["chunk_id"]
+            r["bm25_score"] = bm25_scores.get(cid, 0.0)
+            r["bm25_hits"] = bm25_hits.get(cid, 0)
 
-        # =====================================================
-        # 4️⃣ Cross-encoder (ONLY q0)
-        # =====================================================
+        # --- Cross-Encoder (q0 only) ---
         if self.reranker is not None:
             dense_res = self.reranker.score(query, dense_res)
-            dense_res = sorted(
-                dense_res,
-                key=lambda x: x["ce_score"],
-                reverse=True,
-            )
+            dense_res.sort(key=lambda x: x["ce_score"], reverse=True)
 
-            # =================================================
-            # 🔥 STRONG ANSWER GATE
-            # =================================================
-            if self.ce_strong_threshold is not None and dense_res:
-                max_ce = dense_res[0]["ce_score"]
-
-                if max_ce >= self.ce_strong_threshold:
-                    strong = [
-                        r for r in dense_res
-                        if r["ce_score"] >= self.ce_strong_threshold
-                    ]
-
-                    # защитный минимум
-                    if strong:
-                        return strong
-        # =====================================================
-        # 5️⃣ Final top-k
-        # =====================================================
-        return dense_res[:final_top_k]
+        return dense_res
