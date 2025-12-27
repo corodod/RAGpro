@@ -3,18 +3,18 @@ from __future__ import annotations
 
 from typing import List, Set
 import spacy
+import re
 
 
 class EntityExtractor:
     """
-    High-quality entity extractor based on spaCy NER.
+    Robust entity extractor for retrieval expansion.
 
-    Extracts:
-      - named entities (PERSON, ORG, GPE, EVENT, etc.)
-      - returns clean surface forms
-      - suitable for recall-expansion queries
+    Strategy:
+    1) spaCy NER (high precision)
+    2) Fallback: capitalized noun phrases (high recall)
 
-    This is NOT a toy extractor.
+    This is retrieval-oriented, not pure NER.
     """
 
     def __init__(
@@ -25,7 +25,6 @@ class EntityExtractor:
     ):
         self.nlp = spacy.load(model)
 
-        # по умолчанию — всё полезное для retrieval
         self.allowed_labels = allowed_labels or {
             "PERSON",
             "ORG",
@@ -33,29 +32,24 @@ class EntityExtractor:
             "LOC",
             "EVENT",
             "WORK_OF_ART",
-            "DATE",
         }
 
         self.min_len = min_len
 
     def extract(self, text: str) -> List[str]:
-        """
-        Extract entities from question.
-
-        Returns:
-          List[str]: unique entity strings, order preserved
-        """
         doc = self.nlp(text)
 
-        seen = set()
         entities: List[str] = []
+        seen = set()
 
+        # --------------------------------------------------
+        # 1️⃣ Primary: spaCy NER
+        # --------------------------------------------------
         for ent in doc.ents:
             if ent.label_ not in self.allowed_labels:
                 continue
 
             val = ent.text.strip()
-
             if len(val) < self.min_len:
                 continue
 
@@ -65,5 +59,31 @@ class EntityExtractor:
 
             seen.add(key)
             entities.append(val)
+
+        if entities:
+            return entities
+
+        # --------------------------------------------------
+        # 2️⃣ Fallback: capitalized spans (RU-friendly)
+        # --------------------------------------------------
+        text_norm = text.strip()
+
+        # ищем последовательности слов с заглавных букв
+        candidates = re.findall(
+            r"(?:[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)+)",
+            text_norm,
+        )
+
+        for c in candidates:
+            c = c.strip()
+            if len(c) < self.min_len:
+                continue
+
+            key = c.lower()
+            if key in seen:
+                continue
+
+            seen.add(key)
+            entities.append(c)
 
         return entities
