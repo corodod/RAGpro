@@ -1,3 +1,4 @@
+# scripts/semantic_split.py
 import json
 import numpy as np
 from pathlib import Path

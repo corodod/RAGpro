@@ -72,9 +72,10 @@ def main():
             # главное: сделай k >= max(KS), чтобы было из чего считать
             res = hybrid.search(
                 query=q,
+                rewrites=[],  # 👈 важно
                 bm25_top_n=200,
                 dense_top_n=50,
-                top_k=max(KS),
+                final_top_k=max(KS),  # 👈 вместо top_k
             )
 
             pred_doc_ids = [doc_id_from_chunk_id(r["chunk_id"]) for r in res]

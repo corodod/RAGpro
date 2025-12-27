@@ -1,3 +1,4 @@
+# scripts/download_wiki_expanded.py
 from datasets import load_dataset
 import json
 from pathlib import Path
