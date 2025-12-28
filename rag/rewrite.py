@@ -131,7 +131,13 @@ class QueryRewriter:
 
     # --------------------------------------------------------
 
-    def rewrite(self, query: str) -> List[str]:
+    def rewrite(
+            self,
+            query: str,
+            *,
+            n_rewrites: int,
+            min_cosine: float,
+    ) -> List[str]:
         query_n = normalize_text(query)
         if not query_n:
             return []
@@ -150,5 +156,4 @@ class QueryRewriter:
         rewrites = self._parse_output(out)
         rewrites = [r for r in rewrites if r != query_n]
         rewrites = self._filter_by_similarity(query_n, rewrites)
-        return rewrites[: self.n_rewrites]
-
+        return rewrites[:n_rewrites]

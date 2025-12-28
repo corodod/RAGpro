@@ -14,18 +14,26 @@ from rag.dense import DenseRetriever
 
 @dataclass
 class RetrieverConfig:
+    # --- base retrieval ---
     bm25_top_n: int = 300
     dense_top_n: int = 100
     final_top_k: int = 20
 
+    # --- rewrites ---
     use_rewrites: bool = True
+    n_rewrites: int = 2
+    rewrite_min_cosine: float = 0.75
+
+    # --- cross-encoder ---
     use_cross_encoder: bool = True
     ce_strong_threshold: Optional[float] = 11.2
 
+    # --- entity expansion ---
     use_entity_expansion: bool = True
     entity_bm25_top_n: int = 150
     entity_dense_top_n: int = 50
 
+    # --- coverage ---
     use_coverage: bool = True
 
 
@@ -64,7 +72,11 @@ class Retriever:
         # ================= Rewrites =================
         rewrites = []
         if self.cfg.use_rewrites and self.rewriter is not None:
-            rewrites = self.rewriter.rewrite(q0)
+            rewrites = self.rewriter.rewrite(
+                q0,
+                n_rewrites=self.cfg.n_rewrites,
+                min_cosine=self.cfg.rewrite_min_cosine,
+            )
 
         if self.debug:
             print("\n" + "=" * 80)
