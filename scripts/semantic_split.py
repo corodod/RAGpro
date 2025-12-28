@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 
 # ================== PATHS ==================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RAW_PATH = PROJECT_ROOT / "data" / "raw" / "wiki_expanded.jsonl"
+RAW_PATH = PROJECT_ROOT / "data" / "raw" / "wiki_corpus.jsonl"
 
 OUT_DIR = PROJECT_ROOT / "data" / "processed"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
