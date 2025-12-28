@@ -1,17 +1,17 @@
 # rag/retriever.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterable
 
-from rag.hybrid import HybridRetriever
+from rag.bm25 import BM25Retriever
+from rag.dense import DenseRetriever
+from rag.reranker import CrossEncoderReranker
 from rag.rewrite import QueryRewriter
 from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
-from rag.dense import DenseRetriever
 
 
 # ================= CONFIG =================
-
 @dataclass
 class RetrieverConfig:
     # --- base retrieval ---
@@ -38,26 +38,27 @@ class RetrieverConfig:
 
 
 # ================= RETRIEVER =================
-
 class Retriever:
     """
     Unified retrieval entry point.
-    This is the ONLY place where retrieval policy lives.
+    ALL retrieval logic lives here.
     """
 
     def __init__(
         self,
         *,
-        hybrid: HybridRetriever,
+        bm25: BM25Retriever,
         dense: DenseRetriever,
+        reranker: Optional[CrossEncoderReranker] = None,
         rewriter: Optional[QueryRewriter] = None,
         entity_extractor: Optional[EntityExtractor] = None,
         coverage_selector: Optional[CoverageSelector] = None,
         config: RetrieverConfig,
         debug: bool = False,
     ):
-        self.hybrid = hybrid
+        self.bm25 = bm25
         self.dense = dense
+        self.reranker = reranker
         self.rewriter = rewriter
         self.entity_extractor = entity_extractor
         self.coverage_selector = coverage_selector
@@ -70,7 +71,7 @@ class Retriever:
         q0 = question
 
         # ================= Rewrites =================
-        rewrites = []
+        rewrites: Iterable[str] = []
         if self.cfg.use_rewrites and self.rewriter is not None:
             rewrites = self.rewriter.rewrite(
                 q0,
@@ -84,34 +85,33 @@ class Retriever:
             print("[REWRITES]", rewrites or "(none)")
 
         # ================= Base retrieval =================
-        base = self.hybrid.search(
+        candidates = self._base_retrieval(
             query=q0,
             rewrites=rewrites,
             bm25_top_n=self.cfg.bm25_top_n,
             dense_top_n=self.cfg.dense_top_n,
-            final_top_k=self.cfg.final_top_k,
-            t_strong=self.cfg.ce_strong_threshold
-            if self.cfg.use_cross_encoder else None,
         )
 
-        if not base:
+        if not candidates:
             return []
 
-        max_ce = base[0].get("ce_score")
-
+        # ================= CE confidence gate =================
         if (
             self.cfg.use_cross_encoder
             and self.cfg.ce_strong_threshold is not None
-            and max_ce is not None
-            and max_ce >= self.cfg.ce_strong_threshold
+            and self.reranker is not None
         ):
-            if self.debug:
-                print("[PATH] STRONG_CE_EXIT", max_ce)
-            return self._strip(base)
+            max_ce = candidates[0].get("ce_score")
+            if max_ce is not None and max_ce >= self.cfg.ce_strong_threshold:
+                if self.debug:
+                    print("[PATH] STRONG_CE_EXIT", max_ce)
+                strong = [
+                    r for r in candidates
+                    if r.get("ce_score", -1e9) >= self.cfg.ce_strong_threshold
+                ]
+                return self._strip(strong[: self.cfg.final_top_k])
 
         # ================= Entity expansion =================
-        candidates = base
-
         if self.cfg.use_entity_expansion and self.entity_extractor is not None:
             entities = self.entity_extractor.extract(q0)
 
@@ -122,12 +122,11 @@ class Retriever:
             expanded = []
             for e in entities:
                 expanded.extend(
-                    self.hybrid.search(
+                    self._base_retrieval(
                         query=e,
                         rewrites=[],
                         bm25_top_n=self.cfg.entity_bm25_top_n,
                         dense_top_n=self.cfg.entity_dense_top_n,
-                        final_top_k=self.cfg.final_top_k,
                     )
                 )
 
@@ -148,9 +147,65 @@ class Retriever:
                 emb_key="dense_emb",
             )
 
-        return self._strip(candidates)
+        return self._strip(candidates[: self.cfg.final_top_k])
 
     # --------------------------------------------------
+    # Internal helpers
+    # --------------------------------------------------
+
+    def _base_retrieval(
+        self,
+        *,
+        query: str,
+        rewrites: Iterable[str],
+        bm25_top_n: int,
+        dense_top_n: int,
+    ) -> List[Dict]:
+
+        bm25_scores: dict[str, float] = {}
+        bm25_hits: dict[str, int] = {}
+
+        # --- BM25(q0) ---
+        for r in self.bm25.search(query, top_k=bm25_top_n):
+            cid = r["chunk_id"]
+            bm25_scores[cid] = r["bm25_score"]
+            bm25_hits[cid] = bm25_hits.get(cid, 0) + 1
+
+        # --- BM25(rewrites) ---
+        for q in rewrites:
+            for r in self.bm25.search(q, top_k=bm25_top_n):
+                cid = r["chunk_id"]
+                bm25_hits[cid] = bm25_hits.get(cid, 0) + 1
+
+        if not bm25_hits:
+            return []
+
+        candidate_ids = [
+            cid for cid in bm25_hits
+            if bm25_scores.get(cid, 0.0) > 0.0 or bm25_hits[cid] >= 2
+        ]
+
+        if not candidate_ids:
+            return []
+
+        # --- Dense rerank ---
+        dense_res = self.dense.rerank_candidates(
+            query,
+            candidate_ids,
+            top_k=dense_top_n,
+        )
+
+        for r in dense_res:
+            cid = r["chunk_id"]
+            r["bm25_score"] = bm25_scores.get(cid, 0.0)
+            r["bm25_hits"] = bm25_hits.get(cid, 0)
+
+        # --- Cross-Encoder ---
+        if self.reranker is not None:
+            dense_res = self.reranker.score(query, dense_res)
+            dense_res.sort(key=lambda x: x["ce_score"], reverse=True)
+
+        return dense_res
 
     @staticmethod
     def _strip(chunks: List[Dict]) -> List[Dict]:

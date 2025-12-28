@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from rag.bm25 import BM25Retriever
 from rag.dense import DenseRetriever
-from rag.hybrid import HybridRetriever
 from rag.reranker import CrossEncoderReranker
 from rag.rewrite import QueryRewriter
 from rag.entities import EntityExtractor
@@ -29,8 +28,7 @@ UI_PATH = PROJECT_ROOT / "ui" / "index.html"
 backend = os.getenv("GEN_BACKEND", "cpu")
 device = "cuda" if backend == "cuda" else "cpu"
 
-
-# ================= BUILD =================
+# ---------- Build retriever ----------
 bm25 = BM25Retriever.load(INDEX_DIR)
 
 dense = DenseRetriever(
@@ -40,17 +38,10 @@ dense = DenseRetriever(
 )
 dense.load()
 
-reranker = CrossEncoderReranker(device=device)
-
-hybrid = HybridRetriever(
+retriever = Retriever(
     bm25=bm25,
     dense=dense,
-    reranker=reranker,
-)
-
-retriever = Retriever(
-    hybrid=hybrid,
-    dense=dense,
+    reranker=CrossEncoderReranker(device=device),
     rewriter=QueryRewriter(llm_device=device),
     entity_extractor=EntityExtractor(),
     coverage_selector=CoverageSelector(),
@@ -65,8 +56,7 @@ generator = AnswerGenerator(
     )
 )
 
-
-# ================= FASTAPI =================
+# ---------- FastAPI ----------
 app = FastAPI(title="RAGRPO Demo")
 app.add_middleware(
     CORSMiddleware,
