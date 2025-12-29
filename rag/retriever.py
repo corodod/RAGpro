@@ -24,6 +24,10 @@ class RetrieverConfig:
     n_rewrites: int = 2
     rewrite_min_cosine: float = 0.75
 
+    # --- NEW: dense recall over rewrites ---
+    use_dense_rewrites: bool = True         # NEW
+    dense_rewrite_top_n: int = 50              # NEW
+
     # --- cross-encoder ---
     use_cross_encoder: bool = True
     ce_strong_threshold: Optional[float] = 11.2
@@ -71,7 +75,7 @@ class Retriever:
         q0 = question
 
         # ================= Rewrites =================
-        rewrites: Iterable[str] = []
+        rewrites: List[str] = []
         if self.cfg.use_rewrites and self.rewriter is not None:
             rewrites = self.rewriter.rewrite(
                 q0,
@@ -84,13 +88,54 @@ class Retriever:
             print("[QUERY]", q0)
             print("[REWRITES]", rewrites or "(none)")
 
-        # ================= Base retrieval =================
+        # ================= NEW: Dense recall over rewrites =================
+        dense_rewrite_candidates: List[Dict] = []
+
+        if (
+            rewrites
+            and self.cfg.use_rewrites
+            and self.cfg.use_dense_rewrites
+        ):
+            for rq in rewrites:
+                hits = self.dense.search(
+                    rq,
+                    top_k=self.cfg.dense_rewrite_top_n,
+                )
+                dense_rewrite_candidates.extend(hits)
+
+            if self.debug:
+                print(
+                    f"[DENSE-REWRITES] collected "
+                    f"{len(dense_rewrite_candidates)} candidates"
+                )
+
+        # ================= Base retrieval (BM25 + dense + CE) =================
         candidates = self._base_retrieval(
             query=q0,
             rewrites=rewrites,
             bm25_top_n=self.cfg.bm25_top_n,
             dense_top_n=self.cfg.dense_top_n,
         )
+
+        if not candidates:
+            candidates = []
+
+        # ================= NEW: Union with dense rewrite recall =================
+        if dense_rewrite_candidates:
+            by_id = {c["chunk_id"]: c for c in candidates}
+
+            for c in dense_rewrite_candidates:
+                cid = c["chunk_id"]
+                if cid not in by_id:
+                    by_id[cid] = c
+
+            candidates = list(by_id.values())
+
+            if self.debug:
+                print(
+                    f"[UNION] total candidates after dense rewrites: "
+                    f"{len(candidates)}"
+                )
 
         if not candidates:
             return []
@@ -188,7 +233,7 @@ class Retriever:
         if not candidate_ids:
             return []
 
-        # --- Dense rerank ---
+        # --- Dense rerank (q0 only) ---
         dense_res = self.dense.rerank_candidates(
             query,
             candidate_ids,

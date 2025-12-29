@@ -13,7 +13,18 @@ from rag.rewrite import QueryRewriter
 from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
 
+'''
+# baseline
+use_rewrites = False
 
+# bm25 rewrites
+use_rewrites = True
+use_dense_rewrites = False
+
+# dense rewrites (ключевой)
+use_rewrites = True
+use_dense_rewrites = True
+'''
 # ==================================================
 # RETRIEVER POLICY (single source of truth)
 # ==================================================
@@ -27,7 +38,7 @@ KS = [1, 3, 5, 10, 20]
 DEVICE = "cuda"          # "cuda" or "cpu"
 
 MAX_QUERIES: int | None = None      # e.g. 1000
-QUERY_FRACTION: float | None = 0.2  # e.g. 0.2 (20%)
+QUERY_FRACTION: float | None = 0.02  # e.g. 0.2 (20%)
 
 SHUFFLE: bool = False
 RANDOM_SEED: int = 42
