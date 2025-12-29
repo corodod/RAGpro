@@ -40,7 +40,7 @@ DEVICE = "cuda"          # "cuda" or "cpu"
 MAX_QUERIES: int | None = None      # e.g. 1000
 QUERY_FRACTION: float | None = 0.02  # e.g. 0.2 (20%)
 
-SHUFFLE: bool = False
+SHUFFLE: bool = True
 RANDOM_SEED: int = 42
 
 # ==================================================
