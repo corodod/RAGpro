@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from rag.bm25 import BM25Retriever
 from rag.dense import DenseRetriever
@@ -16,12 +16,23 @@ from rag.coverage import CoverageSelector
 @dataclass
 class RetrieverConfig:
     # --- recall ---
-    bm25_top_n: int = 300
-    dense_recall_top_n: int = 50
+    bm25_top_n: int = 400
+    dense_recall_top_n: int = 100
+
+    # --- fusion (RRF) ---
+    use_fusion: bool = True
+    rrf_k: int = 60
+    w_bm25: float = 1.0
+    w_dense: float = 1.0
+    # optional: include ranks from rewrites or only q0
+    fusion_use_rewrites: bool = True
+
+    # how many candidates to keep after fusion before expensive dense rerank
+    fusion_top_n: int = 800
 
     # --- dense ranking ---
-    dense_stage1_top_n: int = 200   # q0-only precision stage
-    dense_stage2_top_n: int = 100   # multi-q rescue stage
+    dense_stage1_top_n: int = 250   # q0-only precision stage
+    dense_stage2_top_n: int = 200   # multi-q rescue stage
 
     # --- final ---
     final_top_k: int = 20
@@ -33,15 +44,15 @@ class RetrieverConfig:
 
     # --- cross-encoder ---
     use_cross_encoder: bool = True
-    ce_strong_threshold: Optional[float] = 11.2
-    ce_top_n: int = 100
+    ce_strong_threshold: Optional[float] = 3.1
+    ce_top_n: int = 100  # (optional) cap CE scoring to top-N after dense_stage2
 
     # --- entity fallback ---
     use_entity_expansion: bool = True
     entity_bm25_top_n: int = 150
     entity_dense_recall_top_n: int = 30
-    entity_top_n_per_entity: int = 2
-    base_top_x: int = 2
+    entity_top_n_per_entity: int = 3
+    base_top_x: int = 3
 
     # --- coverage ---
     use_coverage: bool = True
@@ -52,10 +63,12 @@ class Retriever:
     """
     Hybrid retriever:
       - Multi-query recall (BM25 + DenseSearch)
+      - RRF / weighted fusion BEFORE dense reranking (preserves rank signals)
       - Two-stage dense ranking:
-          1) q0-only precision
-          2) multi-query recall rescue
-      - CE only on q0
+          1) q0-only precision anchor
+          2) multi-query rescue
+      - CE only on q0 (optional top-N cap)
+      - Confidence gate (lower threshold)
       - Entity fallback + coverage
     """
 
@@ -82,6 +95,11 @@ class Retriever:
 
     # --------------------------------------------------
 
+    @staticmethod
+    def _rrf(rrf_k: int, rank: int) -> float:
+        # rank is 1-based
+        return 1.0 / (rrf_k + rank)
+
     def retrieve(self, question: str) -> List[Dict]:
         q0 = question
 
@@ -96,32 +114,69 @@ class Retriever:
 
         Q = [q0] + rewrites
 
-        # ================= 2) Multi-query recall =================
+        # Which queries participate in fusion?
+        Q_fusion = Q if (self.cfg.fusion_use_rewrites and rewrites) else [q0]
+
+        # ================= 2) Multi-query recall + rank tracking =================
         cand: Dict[str, Dict] = {}
 
-        def upsert(cid: str, hit: Dict):
+        def ensure(cid: str, hit: Dict):
             if cid not in cand:
                 cand[cid] = {
                     "chunk_id": cid,
                     "title": hit.get("title", ""),
                     "text": hit.get("text", ""),
+                    # fused pre-score
+                    "fused_score": 0.0,
+                    # best ranks across sources
+                    "bm25_rank": None,
+                    "dense_rank": None,
+                    # downstream scores
                     "dense_q0": None,
                     "dense_multi": None,
                     "dense_emb": None,
                 }
 
-        # BM25 + DenseSearch for each q
-        for q in Q:
-            for r in self.bm25.search(q, top_k=self.cfg.bm25_top_n):
-                upsert(r["chunk_id"], r)
+        # 2.1 BM25 ranks
+        for q in Q_fusion:
+            bm25_hits = self.bm25.search(q, top_k=self.cfg.bm25_top_n)
+            for i, r in enumerate(bm25_hits, start=1):
+                cid = r["chunk_id"]
+                ensure(cid, r)
+                prev = cand[cid]["bm25_rank"]
+                cand[cid]["bm25_rank"] = i if prev is None else min(prev, i)
 
-            for r in self.dense.search(q, top_k=self.cfg.dense_recall_top_n):
-                upsert(r["chunk_id"], r)
+        # 2.2 Dense ANN ranks (FAISS) as recall ranks
+        for q in Q_fusion:
+            dense_hits = self.dense.search(q, top_k=self.cfg.dense_recall_top_n)
+            for i, r in enumerate(dense_hits, start=1):
+                cid = r["chunk_id"]
+                ensure(cid, r)
+                prev = cand[cid]["dense_rank"]
+                cand[cid]["dense_rank"] = i if prev is None else min(prev, i)
 
         if not cand:
             return []
 
-        candidate_ids = list(cand.keys())
+        # ================= 2.3 RRF / weighted fusion BEFORE dense rerank =================
+        if self.cfg.use_fusion:
+            for c in cand.values():
+                fs = 0.0
+                if c["bm25_rank"] is not None:
+                    fs += self.cfg.w_bm25 * self._rrf(self.cfg.rrf_k, c["bm25_rank"])
+                if c["dense_rank"] is not None:
+                    fs += self.cfg.w_dense * self._rrf(self.cfg.rrf_k, c["dense_rank"])
+                c["fused_score"] = fs
+
+            # primary ordering by fused_score
+            fused_sorted = sorted(cand.values(), key=lambda x: x["fused_score"], reverse=True)
+            fused_sorted = fused_sorted[: self.cfg.fusion_top_n]
+            candidate_ids = [c["chunk_id"] for c in fused_sorted]
+
+            # keep only fused shortlist (reduces noise + cost)
+            cand = {c["chunk_id"]: c for c in fused_sorted}
+        else:
+            candidate_ids = list(cand.keys())
 
         # ================= 3) Dense scoring =================
         # 3.1 q0-only dense (precision anchor)
@@ -131,14 +186,13 @@ class Retriever:
             top_k=len(candidate_ids),
             return_embeddings=self.cfg.use_coverage,
         )
-
         for r in scored_q0:
             c = cand[r["chunk_id"]]
             c["dense_q0"] = float(r["dense_score"])
             if "dense_emb" in r:
                 c["dense_emb"] = r["dense_emb"]
 
-        # 3.2 multi-query dense max (recall rescue)
+        # 3.2 multi-query dense max (recall rescue) — use all Q (q0 + rewrites)
         for q in Q:
             scored = self.dense.rerank_candidates(
                 q,
@@ -156,25 +210,34 @@ class Retriever:
         # ================= 4) Two-stage dense rank =================
         C1 = list(cand.values())
 
-        # Stage 1: q0 precision
+        # Stage 0 (optional but helpful): keep fused order as a weak prior in tie cases
+        # (we already filtered by fusion_top_n, so this mostly stabilizes)
+        # Now do the anchored stages:
         C1.sort(key=lambda x: x["dense_q0"], reverse=True)
         C1 = C1[: self.cfg.dense_stage1_top_n]
 
-        # Stage 2: multi-q rescue
         C1.sort(key=lambda x: x["dense_multi"], reverse=True)
         C2 = C1[: self.cfg.dense_stage2_top_n]
 
         # ================= 5) Cross-Encoder (q0 only) =================
         if self.cfg.use_cross_encoder and self.reranker is not None:
-            C2 = self.reranker.score(q0, C2)
-            C2.sort(key=lambda x: x.get("ce_score", -1e9), reverse=True)
+            # optional cap: CE is expensive, and also it shouldn't "judge" too much noise
+            if self.cfg.ce_top_n is not None and self.cfg.ce_top_n > 0:
+                C2_for_ce = C2[: self.cfg.ce_top_n]
+            else:
+                C2_for_ce = C2
 
-        # ================= 6) Confidence gate =================
+            C2_for_ce = self.reranker.score(q0, C2_for_ce)
+            C2_for_ce.sort(key=lambda x: x.get("ce_score", -1e9), reverse=True)
+
+            # merge back (keep CE-scored items first, then the rest in current order)
+            scored_ids = {c["chunk_id"] for c in C2_for_ce}
+            rest = [c for c in C2 if c["chunk_id"] not in scored_ids]
+            C2 = C2_for_ce + rest
+
+        # ================= 6) Confidence gate (lower threshold) =================
         if self.cfg.ce_strong_threshold is not None:
-            strong = [
-                c for c in C2
-                if c.get("ce_score", -1e9) >= self.cfg.ce_strong_threshold
-            ]
+            strong = [c for c in C2 if c.get("ce_score", -1e9) >= self.cfg.ce_strong_threshold]
             if strong:
                 return self._strip(strong[: self.cfg.final_top_k])
 
@@ -190,8 +253,7 @@ class Retriever:
         for e in entities:
             bm25 = self.bm25.search(e, top_k=self.cfg.entity_bm25_top_n)
             dense = self.dense.search(e, top_k=self.cfg.entity_dense_recall_top_n)
-            merged = bm25 + dense
-            merged = merged[: self.cfg.entity_top_n_per_entity]
+            merged = (bm25 + dense)[: self.cfg.entity_top_n_per_entity]
 
             for r in merged:
                 cid = r["chunk_id"]
@@ -200,6 +262,8 @@ class Retriever:
                         "chunk_id": cid,
                         "title": r.get("title", ""),
                         "text": r.get("text", ""),
+                        # keep optional fields consistent
+                        "dense_emb": None,
                     }
 
         pool = list(ent_pool.values())

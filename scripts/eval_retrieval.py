@@ -1,8 +1,8 @@
-# scripts/eval_retrieval.py
 import json
 import random
 from pathlib import Path
 from statistics import mean
+from collections import Counter
 from tqdm import tqdm
 
 from rag.bm25 import BM25Retriever
@@ -13,32 +13,22 @@ from rag.rewrite import QueryRewriter
 from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
 
-'''
-# baseline
-use_rewrites = False
 
-# bm25 rewrites
-use_rewrites = True
-use_dense_rewrites = False
-
-# dense rewrites (ключевой)
-use_rewrites = True
-use_dense_rewrites = True
-'''
 # ==================================================
-# RETRIEVER POLICY (single source of truth)
+# RETRIEVER POLICY
 # ==================================================
 
 RETRIEVER_CONFIG = RetrieverConfig()
 
 # ==================================================
-# EVAL CONFIG (experiment protocol)
+# EVAL CONFIG
 # ==================================================
-KS = [1, 3, 5, 10, 20]
-DEVICE = "cuda"          # "cuda" or "cpu"
 
-MAX_QUERIES: int | None = None      # e.g. 1000
-QUERY_FRACTION: float | None = 0.02  # e.g. 0.2 (20%)
+KS = [1, 3, 5, 10, 20]
+DEVICE = "cuda"
+
+MAX_QUERIES: int | None = None
+QUERY_FRACTION: float | None = 0.2
 
 SHUFFLE: bool = True
 RANDOM_SEED: int = 42
@@ -52,6 +42,8 @@ INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
 CHUNKS_PATH = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
 EVAL_PATH = PROJECT_ROOT / "data" / "eval" / "rubq_eval.jsonl"
 
+REPORT_DIR = PROJECT_ROOT / "eval_reports"
+REPORT_DIR.mkdir(exist_ok=True)
 
 # ==================================================
 # METRICS
@@ -71,9 +63,18 @@ def mrr_at_k(pred_doc_ids, gold_doc_ids, k):
             return 1.0 / i
     return 0.0
 
+
+def question_len_bucket(q: str) -> str:
+    n = len(q.split())
+    if n <= 4:
+        return "short"
+    if n <= 8:
+        return "medium"
+    return "long"
+
+
 def print_config():
     print("\n================ CONFIG =================")
-
     print("\n[RetrieverConfig]")
     for k, v in vars(RETRIEVER_CONFIG).items():
         print(f"{k:25s}: {v}")
@@ -87,21 +88,19 @@ def print_config():
 
     print("\n[Metrics]")
     print(f"{'KS':25s}: {KS}")
-
     print("=" * 40)
+
 
 # ==================================================
 # MAIN
 # ==================================================
 
 def main():
-    # ---------- Sanity checks ----------
+    # ---------- sanity ----------
     if MAX_QUERIES is not None and QUERY_FRACTION is not None:
-        raise ValueError(
-            "Use only one of MAX_QUERIES or QUERY_FRACTION, not both."
-        )
+        raise ValueError("Use only one of MAX_QUERIES or QUERY_FRACTION")
 
-    # ---------- Load dataset ----------
+    # ---------- load dataset ----------
     with open(EVAL_PATH, encoding="utf-8") as f:
         items = [json.loads(line) for line in f]
 
@@ -110,12 +109,11 @@ def main():
         random.shuffle(items)
 
     if QUERY_FRACTION is not None:
-        n = int(len(items) * QUERY_FRACTION)
-        items = items[:n]
+        items = items[: int(len(items) * QUERY_FRACTION)]
     elif MAX_QUERIES is not None:
         items = items[:MAX_QUERIES]
 
-    # ---------- Load retrievers ----------
+    # ---------- load retriever ----------
     bm25 = BM25Retriever.load(INDEX_DIR)
 
     dense = DenseRetriever(
@@ -161,25 +159,61 @@ def main():
         debug=False,
     )
 
-    # ---------- Eval loop ----------
+    # ---------- eval stats ----------
     recalls = {k: [] for k in KS}
     mrrs = {k: [] for k in KS}
 
+    failures = {
+        "no_hit": [],
+        "miss_at_1": [],
+        "low_rank": [],
+    }
+
+    rank_hist = Counter()
+    bucket_stats = {"short": [], "medium": [], "long": []}
+
+    # ---------- eval loop ----------
     for item in tqdm(items, desc="Evaluating"):
-        res = retriever.retrieve(item["question"])
-
-        pred_doc_ids = [
-            doc_id_from_chunk_id(r["chunk_id"])
-            for r in res
-        ]
-
+        question = item["question"]
+        qid = item.get("id")
         gold = set(map(str, item["gold_doc_ids"]))
 
+        res = retriever.retrieve(question)
+        pred_doc_ids = [doc_id_from_chunk_id(r["chunk_id"]) for r in res]
+
+        # metrics
         for k in KS:
             recalls[k].append(recall_at_k(pred_doc_ids, gold, k))
             mrrs[k].append(mrr_at_k(pred_doc_ids, gold, k))
 
-    # ---------- Report ----------
+        # rank analysis
+        rank = None
+        for i, d in enumerate(pred_doc_ids, start=1):
+            if d in gold:
+                rank = i
+                break
+
+        bucket = question_len_bucket(question)
+        bucket_stats[bucket].append(rank is not None)
+
+        if rank is None:
+            failures["no_hit"].append({
+                "id": qid,
+                "question": question,
+                "gold_doc_ids": list(gold),
+            })
+        else:
+            rank_hist[rank] += 1
+            if rank > 1:
+                failures["miss_at_1"].append(qid)
+            if rank > 10:
+                failures["low_rank"].append({
+                    "id": qid,
+                    "question": question,
+                    "rank": rank,
+                })
+
+    # ---------- report ----------
     print_config()
 
     print("\n================ RESULTS ================")
@@ -189,6 +223,32 @@ def main():
             f"Recall@{k}: {mean(recalls[k]):.4f} | "
             f"MRR@{k}: {mean(mrrs[k]):.4f}"
         )
+
+    print("\n================ FAILURE STATS ================")
+    print(f"NO_HIT:     {len(failures['no_hit'])}")
+    print(f"MISS@1:     {len(failures['miss_at_1'])}")
+    print(f"LOW_RANK>10:{len(failures['low_rank'])}")
+
+    print("\n================ RANK HISTOGRAM ================")
+    for r in sorted(rank_hist):
+        if r <= 20:
+            print(f"rank {r:2d}: {rank_hist[r]}")
+
+    print("\n================ RECALL BY QUESTION LENGTH ================")
+    for b, xs in bucket_stats.items():
+        if xs:
+            print(f"{b:6s}: {sum(xs)/len(xs):.3f}")
+
+    # ---------- save reports ----------
+    def dump(name, data):
+        path = REPORT_DIR / f"{name}.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            for x in data:
+                f.write(json.dumps(x, ensure_ascii=False) + "\n")
+        print(f"Saved {len(data)} → {path}")
+
+    dump("no_hit", failures["no_hit"])
+    dump("low_rank", failures["low_rank"])
 
 
 if __name__ == "__main__":
