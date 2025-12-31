@@ -21,9 +21,9 @@ model = SentenceTransformer("intfloat/multilingual-e5-small")
 
 
 # ================== CHUNK PARAMS ==================
-MAX_CHARS = 800
-MIN_CHARS = 200
-SIM_THRESHOLD = 0.80
+MAX_CHARS = 500
+MIN_CHARS = 120
+SIM_THRESHOLD = 0.65
 
 
 def cosine(a, b):
