@@ -122,12 +122,14 @@ class Retriever:
             )
 
         Q = [q0] + rewrites
-        Q_entity = entities if entities else []
-
-        if self.cfg.fusion_use_rewrites:
-            Q_fusion = Q + Q_entity
-        else:
-            Q_fusion = [q0] + Q_entity
+        Q_entity = []  # ❗ entity НЕ участвует в основном recall
+        Q_fusion = Q
+        # Q_entity = entities if entities else []
+        #
+        # if self.cfg.fusion_use_rewrites:
+        #     Q_fusion = Q + Q_entity
+        # else:
+        #     Q_fusion = [q0] + Q_entity
 
         # ================= 2) Multi-query recall + rank tracking =================
         cand: Dict[str, Dict] = {}
