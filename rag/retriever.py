@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from rag.bm25 import BM25Retriever
 from rag.dense import DenseRetriever
@@ -16,7 +16,7 @@ from rag.coverage import CoverageSelector
 @dataclass
 class RetrieverConfig:
     # --- recall ---
-    bm25_top_n: int = 700
+    bm25_top_n: int = 800
     dense_recall_top_n: int = 350
 
     # --- entity-only recall limits ---
@@ -25,19 +25,18 @@ class RetrieverConfig:
 
     # --- fusion (RRF) ---
     use_fusion: bool = True
-    rrf_k: int = 80
+    rrf_k: int = 100
     w_bm25: float = 1.0
     w_dense: float = 1.0
     # optional: include ranks from rewrites or only q0
     fusion_use_rewrites: bool = False
-    # how many candidates to keep after fusion before expensive dense rerank
-    fusion_top_n: int = 600
+    fusion_top_n: int = 700
 
     # --- entity bias ---
     entity_bias: float = 1.2
 
     # --- dense ranking ---
-    dense_stage1_top_n: int = 300
+    dense_stage1_top_n: int = 400
     dense_stage2_top_n: int = 200
 
     # --- final ---
@@ -55,10 +54,10 @@ class RetrieverConfig:
 
     # --- entity fallback ---
     use_entity_expansion: bool = True
-    entity_bm25_top_n: int = 50
-    entity_dense_recall_top_n: int = 50
-    entity_top_n_per_entity: int = 5
-    base_top_x: int = 5
+    entity_bm25_top_n: int = 100
+    entity_dense_recall_top_n: int = 30
+    entity_top_n_per_entity: int = 6
+    base_top_x: int = 6
 
     # --- coverage ---
     use_coverage: bool = False
@@ -98,7 +97,8 @@ class Retriever:
         self.cfg = config
         self.debug = debug
 
-    # --------------------------------------------------
+        # >>> LOG: храним последнюю диагностику
+        self.last_debug: Dict = {}
 
     @staticmethod
     def _rrf(rrf_k: int, rank: int) -> float:
@@ -109,12 +109,19 @@ class Retriever:
     def retrieve(self, question: str) -> List[Dict]:
         q0 = question
 
-        # ========== entities (used only in fallback / optional recall) ==========
+        # ========== entities ==========
         entities: List[str] = (
             self.entity_extractor.extract(q0)
             if self.entity_extractor is not None
             else []
         )
+
+        # >>> LOG: сущности
+        self.last_debug = {
+            "entities": entities,
+            "gold_sources": [],
+            "entity_hit": False,
+        }
 
         # ========== rewrites ==========
         rewrites: List[str] = []
@@ -126,12 +133,7 @@ class Retriever:
             )
 
         Q = [q0] + rewrites
-
-        # Which queries participate in recall / fusion
-        if self.cfg.use_fusion and self.cfg.fusion_use_rewrites:
-            Q_fusion = Q
-        else:
-            Q_fusion = [q0]
+        Q_fusion = Q if (self.cfg.use_fusion and self.cfg.fusion_use_rewrites) else [q0]
 
         # ========== recall ==========
         cand: Dict[str, Dict] = {}
@@ -154,63 +156,43 @@ class Retriever:
 
         # --- BM25 ---
         for q in Q_fusion:
-            for i, r in enumerate(
-                self.bm25.search(q, top_k=self.cfg.bm25_top_n),
-                start=1,
-            ):
+            for i, r in enumerate(self.bm25.search(q, self.cfg.bm25_top_n), start=1):
                 cid = r["chunk_id"]
                 ensure(cid, r)
-                cand[cid]["bm25_rank"] = (
-                    i if cand[cid]["bm25_rank"] is None
-                    else min(cand[cid]["bm25_rank"], i)
-                )
+                cand[cid]["bm25_rank"] = i if cand[cid]["bm25_rank"] is None else min(cand[cid]["bm25_rank"], i)
                 cand[cid]["source"].add("query")
 
-        # --- Dense ANN ---
+        # --- Dense ---
         for q in Q_fusion:
-            for i, r in enumerate(
-                self.dense.search(q, top_k=self.cfg.dense_recall_top_n),
-                start=1,
-            ):
+            for i, r in enumerate(self.dense.search(q, self.cfg.dense_recall_top_n), start=1):
                 cid = r["chunk_id"]
                 ensure(cid, r)
-                cand[cid]["dense_rank"] = (
-                    i if cand[cid]["dense_rank"] is None
-                    else min(cand[cid]["dense_rank"], i)
-                )
+                cand[cid]["dense_rank"] = i if cand[cid]["dense_rank"] is None else min(cand[cid]["dense_rank"], i)
                 cand[cid]["source"].add("query")
 
         if not cand:
             return []
 
-        # ========== optional fusion ==========
+        # ========== fusion ==========
         if self.cfg.use_fusion:
             for c in cand.values():
                 fs = 0.0
                 if c["bm25_rank"] is not None:
-                    fs += self.cfg.w_bm25 * self._rrf(self.cfg.rrf_k, c["bm25_rank"])
+                    fs += self._rrf(self.cfg.rrf_k, c["bm25_rank"])
                 if c["dense_rank"] is not None:
-                    fs += self.cfg.w_dense * self._rrf(self.cfg.rrf_k, c["dense_rank"])
-                if "entity" in c["source"]:
-                    fs *= self.cfg.entity_bias
+                    fs += self._rrf(self.cfg.rrf_k, c["dense_rank"])
                 c["fused_score"] = fs
 
             cand = dict(
-                sorted(
-                    cand.items(),
-                    key=lambda x: x[1]["fused_score"],
-                    reverse=True,
-                )[: self.cfg.fusion_top_n]
+                sorted(cand.items(), key=lambda x: x[1]["fused_score"], reverse=True)
+                [: self.cfg.fusion_top_n]
             )
 
         candidate_ids = list(cand.keys())
 
         # ========== dense rerank ==========
         scored_q0 = self.dense.rerank_candidates(
-            q0,
-            candidate_ids,
-            top_k=len(candidate_ids),
-            return_embeddings=self.cfg.use_coverage,
+            q0, candidate_ids, top_k=len(candidate_ids), return_embeddings=self.cfg.use_coverage
         )
 
         for r in scored_q0:
@@ -220,38 +202,14 @@ class Retriever:
                 c["dense_emb"] = r["dense_emb"]
 
         for q in Q:
-            scored = self.dense.rerank_candidates(
-                q,
-                candidate_ids,
-                top_k=len(candidate_ids),
-                return_embeddings=False,
-            )
+            scored = self.dense.rerank_candidates(q, candidate_ids, top_k=len(candidate_ids))
             for r in scored:
                 c = cand[r["chunk_id"]]
-                c["dense_multi"] = max(
-                    c["dense_multi"] or float("-inf"),
-                    float(r["dense_score"]),
-                )
+                c["dense_multi"] = max(c["dense_multi"] or float("-inf"), float(r["dense_score"]))
 
-        # ========== two-stage selection ==========
-        C1 = sorted(cand.values(), key=lambda x: x["dense_q0"], reverse=True)
-        C1 = C1[: self.cfg.dense_stage1_top_n]
-
-        C2 = sorted(C1, key=lambda x: x["dense_multi"], reverse=True)
-        C2 = C2[: self.cfg.dense_stage2_top_n]
-
-        # ========== optional CE ==========
-        if self.cfg.use_cross_encoder and self.reranker is not None:
-            C2 = self.reranker.score(q0, C2[: self.cfg.ce_top_n])
-            C2.sort(key=lambda x: x.get("ce_score", -1e9), reverse=True)
-
-        if self.cfg.use_cross_encoder and self.cfg.ce_strong_threshold is not None:
-            strong = [
-                c for c in C2
-                if c.get("ce_score", -1e9) >= self.cfg.ce_strong_threshold
-            ]
-            if strong:
-                return self._strip(strong[: self.cfg.final_top_k])
+        # ========== selection ==========
+        C1 = sorted(cand.values(), key=lambda x: x["dense_q0"], reverse=True)[: self.cfg.dense_stage1_top_n]
+        C2 = sorted(C1, key=lambda x: x["dense_multi"], reverse=True)[: self.cfg.dense_stage2_top_n]
 
         # ========== entity fallback ==========
         base = C2[: self.cfg.base_top_x]
@@ -259,37 +217,27 @@ class Retriever:
             return self._strip(base[: self.cfg.final_top_k])
 
         ent_pool = {c["chunk_id"]: c for c in base}
+
         for e in entities:
             for r in (
                 self.bm25.search(e, self.cfg.entity_bm25_top_n)
                 + self.dense.search(e, self.cfg.entity_dense_recall_top_n)
             )[: self.cfg.entity_top_n_per_entity]:
-                if r["chunk_id"] not in ent_pool:
-                    ent_pool[r["chunk_id"]] = {
-                        "chunk_id": r["chunk_id"],
+                cid = r["chunk_id"]
+                if cid not in ent_pool:
+                    ent_pool[cid] = {
+                        "chunk_id": cid,
                         "title": r.get("title", ""),
                         "text": r.get("text", ""),
                         "dense_emb": None,
                     }
+                # >>> LOG: entity hit
+                ent_pool[cid].setdefault("source", set()).add("entity")
 
-        pool = list(ent_pool.values())
+        # >>> LOG: был ли hit по entity вообще
+        self.last_debug["entity_hit"] = bool(ent_pool)
 
-        # ========== coverage ==========
-        if self.cfg.use_coverage and self.coverage_selector is not None:
-            pool_ids = [c["chunk_id"] for c in pool]
-            pool = self.dense.rerank_candidates(
-                q0,
-                pool_ids,
-                top_k=len(pool_ids),
-                return_embeddings=True,
-            )
-            pool = self.coverage_selector.select(
-                query_emb=self.dense.encode_query(q0),
-                candidates=pool,
-                emb_key="dense_emb",
-            )
-
-        return self._strip(pool[: self.cfg.final_top_k])
+        return self._strip(list(ent_pool.values())[: self.cfg.final_top_k])
 
     # --------------------------------------------------
     @staticmethod

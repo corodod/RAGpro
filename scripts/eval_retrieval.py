@@ -1,3 +1,4 @@
+# scripts/eval_retrieval.py
 import json
 import random
 from pathlib import Path
@@ -180,6 +181,17 @@ def main():
 
         res = retriever.retrieve(question)
         pred_doc_ids = [doc_id_from_chunk_id(r["chunk_id"]) for r in res]
+        # >>> LOG №1: стадия потери
+        recall_docs = set(
+            doc_id_from_chunk_id(cid)
+            for cid in retriever.last_debug.get("candidate_ids", [])
+        )
+
+        miss_stage = None
+        if not (recall_docs & gold):
+            miss_stage = "recall"
+        elif not (set(pred_doc_ids[:20]) & gold):
+            miss_stage = "rerank"
 
         # metrics
         for k in KS:
@@ -201,6 +213,9 @@ def main():
                 "id": qid,
                 "question": question,
                 "gold_doc_ids": list(gold),
+                "miss_stage": miss_stage,
+                "entities": retriever.last_debug.get("entities"),
+                "entity_hit": retriever.last_debug.get("entity_hit"),
             })
         else:
             rank_hist[rank] += 1
