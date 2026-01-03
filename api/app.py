@@ -28,6 +28,8 @@ UI_PATH = PROJECT_ROOT / "ui" / "index.html"
 backend = os.getenv("GEN_BACKEND", "cpu")
 device = "cuda" if backend == "cuda" else "cpu"
 
+GEN_TOP_K = 5
+
 # ---------- Build retriever ----------
 bm25 = BM25Retriever.load(INDEX_DIR)
 
@@ -72,13 +74,44 @@ class SearchRequest(BaseModel):
 
 class SearchResponse(BaseModel):
     question: str
+    answer: str
     candidates: List[Dict[str, Any]]
 
 
-@app.post("/search", response_model=SearchResponse)
+@app.post("/rag", response_model=SearchResponse)
 def search(req: SearchRequest):
+    print("\n================ RETRIEVAL =================")
+    print(f"Question: {req.question}")
+
+    # 1️⃣ retrieve
     candidates = retriever.retrieve(req.question)
-    return {"question": req.question, "candidates": candidates}
+
+    print(f"Retrieved {len(candidates)} chunks")
+
+    # логируем первые N
+    for i, c in enumerate(candidates[:GEN_TOP_K], start=1):
+        print(f"\n--- TOP {i} ---")
+        print(f"chunk_id: {c.get('chunk_id')}")
+        print(f"title: {c.get('title')}")
+        print(f"text: {(c.get('text') or '')[:300]}")
+
+    print("\n================ GENERATION =================")
+
+    # 2️⃣ берем TOP-K для генерации
+    top_chunks = candidates[:GEN_TOP_K]
+
+    # 3️⃣ generate answer
+    answer = generator.generate(req.question, top_chunks)
+
+    print("\n================ ANSWER =================")
+    print(answer)
+    print("=========================================\n")
+
+    return {
+        "question": req.question,
+        "answer": answer,
+        "candidates": candidates,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -27,8 +27,7 @@
   <textarea id="question" placeholder="Например: Кто совершил убийство, которое спровоцировало Первую мировую войну?"></textarea>
   <br/>
 
-  <button id="btnSearch">Search chunks</button>
-  <button id="btnAnswer" disabled>Generate answer</button>
+  <button id="btnSearch">To answer the question</button>
 
   <div class="row">
     <div class="col">
@@ -59,19 +58,13 @@ function renderCandidates(cands) {
     const div = document.createElement("div");
     div.className = "card";
     div.innerHTML = `
-      <label>
-        <input type="checkbox" class="chk" data-id="${c.chunk_id}">
-        <b>#${idx+1}</b>
-      </label>
-      <div class="meta">
-        <span class="mono">chunk_id: ${escapeHtml(c.chunk_id)}</span><br/>
-        bm25: ${c.bm25_score?.toFixed?.(3) ?? c.bm25_score} |
-        dense: ${c.dense_score?.toFixed?.(3) ?? c.dense_score} |
-        ce: ${c.ce_score?.toFixed?.(3) ?? c.ce_score}
-      </div>
-      <div><b>${escapeHtml(c.title || "")}</b></div>
-      <div>${escapeHtml((c.text || "").slice(0, 900))}${(c.text||"").length>900 ? "..." : ""}</div>
-    `;
+  <b>#${idx+1}</b>
+  <div class="meta">
+    <span class="mono">chunk_id: ${escapeHtml(c.chunk_id)}</span>
+  </div>
+  <div><b>${escapeHtml(c.title || "")}</b></div>
+  <div>${escapeHtml((c.text || "").slice(0, 900))}${(c.text||"").length>900 ? "..." : ""}</div>
+`;
     root.appendChild(div);
   });
 }
@@ -82,65 +75,29 @@ function getSelectedChunkIds() {
     .map(x => x.getAttribute("data-id"));
 }
 
-async function onSearch() {
+async function onRAG() {
   const q = document.getElementById("question").value.trim();
   if (!q) return;
 
-  document.getElementById("btnAnswer").disabled = true;
-  document.getElementById("answer").innerText = "Ищу чанки...";
+  document.getElementById("answer").innerText = "Ищу ответ...";
+  document.getElementById("candidates").innerHTML = "";
 
-  const resp = await fetch(`${API}/search`, {
+  const resp = await fetch(`${API}/rag`, {
     method: "POST",
     headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({question: q, bm25_top_n: 100, top_k: 12})
+    body: JSON.stringify({question: q})
   });
 
   const data = await resp.json();
-  lastCandidates = data.candidates || [];
 
-  renderCandidates(lastCandidates);
-  document.getElementById("answer").innerText = "Чанки готовы. Выбери нужные и нажми Generate answer.";
-  document.getElementById("btnAnswer").disabled = false;
-  document.getElementById("selected").innerHTML = "";
+  document.getElementById("answer").innerText =
+    data.answer || "Нет ответа.";
+
+  renderCandidates(data.candidates || []);
 }
 
-async function onAnswer() {
-  const q = document.getElementById("question").value.trim();
-  const ids = getSelectedChunkIds();
 
-  if (!q) return;
-  if (ids.length === 0) {
-    alert("Выбери хотя бы один чанк.");
-    return;
-  }
-
-  document.getElementById("answer").innerText = "Генерирую ответ...";
-  document.getElementById("selected").innerHTML = "";
-
-  const resp = await fetch(`${API}/answer`, {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({question: q, selected_chunk_ids: ids})
-  });
-
-  const data = await resp.json();
-  document.getElementById("answer").innerText = data.answer || "(пусто)";
-
-  const sel = document.getElementById("selected");
-  (data.selected_chunks || []).forEach((c, idx) => {
-    const div = document.createElement("div");
-    div.className = "card";
-    div.innerHTML = `
-      <div class="meta"><b>${idx+1}</b> <span class="mono">${escapeHtml(c.chunk_id)}</span></div>
-      <div><b>${escapeHtml(c.title || "")}</b></div>
-      <div>${escapeHtml((c.text || "").slice(0, 900))}${(c.text||"").length>900 ? "..." : ""}</div>
-    `;
-    sel.appendChild(div);
-  });
-}
-
-document.getElementById("btnSearch").addEventListener("click", onSearch);
-document.getElementById("btnAnswer").addEventListener("click", onAnswer);
+document.getElementById("btnSearch").addEventListener("click", onRAG);
 </script>
 </body>
 </html>
