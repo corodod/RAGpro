@@ -52,17 +52,26 @@ with open(RAW_PATH, encoding="utf-8") as f_in, \
             normalize_embeddings=True,
         )
 
+        # ===== init first chunk =====
         current_chunk = sentences[0]
-        current_emb = sent_embs[0]
+
+        chunk_anchor_emb = sent_embs[0]     # 🔒 фиксированный якорь
+        chunk_mean_emb = sent_embs[0]       # агрегат (не для decision)
 
         for sent, emb in zip(sentences[1:], sent_embs[1:]):
-            sim = cosine(current_emb, emb)
+
+            # 🔑 similarity СТРОГО с anchor
+            sim = cosine(chunk_anchor_emb, emb)
 
             if sim >= SIM_THRESHOLD and len(current_chunk) + len(sent) < MAX_CHARS:
                 current_chunk += " " + sent
-                current_emb = (current_emb + emb) / 2
-                current_emb /= np.linalg.norm(current_emb) + 1e-12
+
+                # обновляем ТОЛЬКО mean
+                chunk_mean_emb = chunk_mean_emb + emb
+                chunk_mean_emb /= np.linalg.norm(chunk_mean_emb) + 1e-12
+
             else:
+                # ---- flush chunk ----
                 if len(current_chunk) >= MIN_CHARS:
                     record = {
                         "chunk_id": f"{doc['doc_id']}_{chunk_count}",
@@ -74,8 +83,10 @@ with open(RAW_PATH, encoding="utf-8") as f_in, \
                     f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
                     chunk_count += 1
 
+                # ---- start new chunk ----
                 current_chunk = sent
-                current_emb = emb
+                chunk_anchor_emb = emb
+                chunk_mean_emb = emb
 
         # ---- last chunk ----
         if len(current_chunk) >= MIN_CHARS:

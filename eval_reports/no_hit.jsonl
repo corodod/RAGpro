@@ -3,7 +3,7 @@
 {"id": null, "question": "Какой географический объект называется Лимпопо?", "gold_doc_ids": ["35859", "35856"], "miss_stage": "recall", "entities": ["Лимпопо"], "entity_hit": true}
 {"id": null, "question": "На чем играет Башмет?", "gold_doc_ids": ["11166"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Какой британский нововолновый дуэт исполнял популярный хит «Video Killed the Radio Star» («Видео погубило звезду радио»)?", "gold_doc_ids": ["46648"], "miss_stage": "recall", "entities": [], "entity_hit": false}
-{"id": null, "question": "Кто является режиссером и комедии «Дети Дон Кихота», и военной драмы «Служили два товарища», и приключенческого фильма «Два капитана»?", "gold_doc_ids": ["38570", "38572"], "miss_stage": "recall", "entities": ["Дети Дон Кихота"], "entity_hit": true}
+{"id": null, "question": "Кто является режиссером и комедии «Дети Дон Кихота», и военной драмы «Служили два товарища», и приключенческого фильма «Два капитана»?", "gold_doc_ids": ["38572", "38570"], "miss_stage": "recall", "entities": ["Дети Дон Кихота"], "entity_hit": true}
 {"id": null, "question": "Какой писатель-фантаст придумал три закона робототехники?", "gold_doc_ids": ["37618", "37617"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Кто основал компанию Уорнер Бразерс?", "gold_doc_ids": ["2569"], "miss_stage": "recall", "entities": ["Уорнер Бразерс"], "entity_hit": true}
 {"id": null, "question": "Кто снял фильм Курск?", "gold_doc_ids": ["18131"], "miss_stage": "recall", "entities": [], "entity_hit": false}
@@ -11,7 +11,7 @@
 {"id": null, "question": "Как по-другому называется электрическая дуга?", "gold_doc_ids": ["50128"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Кто написал известную трилогию о хоббитах?", "gold_doc_ids": ["14815"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Какова высота Биг Бена?", "gold_doc_ids": ["27355"], "miss_stage": "recall", "entities": ["Биг Бена"], "entity_hit": true}
-{"id": null, "question": "В каком году заключен Столбовский мир?", "gold_doc_ids": ["24992", "24993"], "miss_stage": "recall", "entities": [], "entity_hit": false}
+{"id": null, "question": "В каком году заключен Столбовский мир?", "gold_doc_ids": ["24993", "24992"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Где правит королевский дом Бернадотов?", "gold_doc_ids": ["38574"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "В какой стране находится гора Эверест?", "gold_doc_ids": ["19822"], "miss_stage": "recall", "entities": ["Эверест"], "entity_hit": true}
 {"id": null, "question": "В какой стране есть город Изюм?", "gold_doc_ids": ["42976", "42978"], "miss_stage": "recall", "entities": ["Изюм"], "entity_hit": true}
@@ -40,7 +40,7 @@
 {"id": null, "question": "Кто является председателем Русского Географического Общества?", "gold_doc_ids": ["27112"], "miss_stage": "recall", "entities": ["Русского Географического Общества"], "entity_hit": true}
 {"id": null, "question": "На каком языке Шарль де Костер написал «Легенду о Тиле Уленшпигеле»?", "gold_doc_ids": ["42864"], "miss_stage": "recall", "entities": ["Тиле Уленшпигеле"], "entity_hit": true}
 {"id": null, "question": "В каком году закончили выпускать автомобиль оку?", "gold_doc_ids": ["32979"], "miss_stage": "recall", "entities": [], "entity_hit": false}
-{"id": null, "question": "Когда была убита царская семья?", "gold_doc_ids": ["27568", "27569"], "miss_stage": "recall", "entities": [], "entity_hit": false}
+{"id": null, "question": "Когда была убита царская семья?", "gold_doc_ids": ["27569", "27568"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Как называются образовательные ткани растений?", "gold_doc_ids": ["49963"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "В какой стране проходили XXI Олимпийские игры", "gold_doc_ids": ["49490"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Кто во время учёбы Гарри всё время был в школе?", "gold_doc_ids": ["7747"], "miss_stage": "recall", "entities": [], "entity_hit": false}
@@ -63,15 +63,15 @@
 {"id": null, "question": "Кто был первым чемпионом «Кубка Либертадорес»?", "gold_doc_ids": ["48735"], "miss_stage": "recall", "entities": ["Кубка Либертадорес"], "entity_hit": true}
 {"id": null, "question": "Из какой династии Карл Великий?", "gold_doc_ids": ["8047"], "miss_stage": "recall", "entities": ["Карл Великий"], "entity_hit": true}
 {"id": null, "question": "Где в 1972 году прошли летние Олимпийские игры?", "gold_doc_ids": ["40408", "40409"], "miss_stage": "recall", "entities": [], "entity_hit": false}
-{"id": null, "question": "Куда отправлялся на съемки режиссер Якин?", "gold_doc_ids": ["26463", "26462", "26464"], "miss_stage": "recall", "entities": [], "entity_hit": false}
+{"id": null, "question": "Куда отправлялся на съемки режиссер Якин?", "gold_doc_ids": ["26463", "26464", "26462"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "В каком месяце был запущен первый советский спутник Земли?", "gold_doc_ids": ["31656"], "miss_stage": "recall", "entities": ["Земли"], "entity_hit": true}
 {"id": null, "question": "Как называют брата жены?", "gold_doc_ids": ["49762"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Когда написано Слово о полку Игореве?", "gold_doc_ids": ["21515"], "miss_stage": "recall", "entities": [], "entity_hit": false}
-{"id": null, "question": "Кто мать у Тимати?", "gold_doc_ids": ["7623", "7612"], "miss_stage": "recall", "entities": [], "entity_hit": false}
-{"id": null, "question": "Какой город является столицей Республики Конго?", "gold_doc_ids": ["42732", "42731"], "miss_stage": "recall", "entities": ["Республики Конго"], "entity_hit": true}
+{"id": null, "question": "Кто мать у Тимати?", "gold_doc_ids": ["7612", "7623"], "miss_stage": "recall", "entities": [], "entity_hit": false}
+{"id": null, "question": "Какой город является столицей Республики Конго?", "gold_doc_ids": ["42731", "42732"], "miss_stage": "recall", "entities": ["Республики Конго"], "entity_hit": true}
 {"id": null, "question": "В каком году произошёл Медный бунт?", "gold_doc_ids": ["26176"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Когда началась Первая мировая?", "gold_doc_ids": ["1542"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "Когда был учрежден орден Октябрьской революции?", "gold_doc_ids": ["27443"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "В каком виде спорта Лариса Латынина завоевала 18 олимпийских медалей?", "gold_doc_ids": ["42002", "42004"], "miss_stage": "recall", "entities": ["Лариса Латынина"], "entity_hit": true}
-{"id": null, "question": "Каким орденом награжден Шойгу?", "gold_doc_ids": ["1028", "1031"], "miss_stage": "recall", "entities": [], "entity_hit": false}
+{"id": null, "question": "Каким орденом награжден Шойгу?", "gold_doc_ids": ["1031", "1028"], "miss_stage": "recall", "entities": [], "entity_hit": false}
 {"id": null, "question": "К какой стране принадлежит производитель BMW?", "gold_doc_ids": ["12795"], "miss_stage": "recall", "entities": ["BMW"], "entity_hit": true}
