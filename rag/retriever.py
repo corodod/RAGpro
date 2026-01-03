@@ -247,6 +247,30 @@ class Retriever:
 
 
         final_candidates = list(ent_pool.values())
+        # ===== DENSE RERANK AFTER ENTITY EXPANSION =====
+        entity_ids = [c["chunk_id"] for c in final_candidates]
+
+        reranked = self.dense.rerank_candidates(
+            q0,
+            entity_ids,
+            top_k=len(entity_ids),
+            return_embeddings=self.cfg.use_coverage,
+        )
+
+        by_id = {c["chunk_id"]: c for c in final_candidates}
+
+        for r in reranked:
+            c = by_id[r["chunk_id"]]
+            c["dense_q0"] = float(r["dense_score"])
+            if "dense_emb" in r:
+                c["dense_emb"] = r["dense_emb"]
+
+        # теперь порядок по реальному score вопроса
+        final_candidates = sorted(
+            final_candidates,
+            key=lambda x: x["dense_q0"],
+            reverse=True,
+        )
 
         # ========== OPTIONAL COVERAGE (FINAL STAGE) ==========
         if self.cfg.use_coverage and self.coverage_selector:
