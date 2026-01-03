@@ -8,13 +8,11 @@ import re
 
 class EntityExtractor:
     """
-    Robust entity extractor for retrieval expansion.
+    Retrieval-oriented entity / concept extractor for RU Wiki QA.
 
-    Strategy:
-    1) spaCy NER (high precision)
-    2) Fallback: capitalized noun phrases (high recall)
-
-    This is retrieval-oriented, not pure NER.
+    Goal:
+    extract referential, self-sufficient entities
+    (not roles, not temporal fillers, not generic object types)
     """
 
     def __init__(
@@ -22,6 +20,7 @@ class EntityExtractor:
         model: str = "ru_core_news_lg",
         allowed_labels: Set[str] | None = None,
         min_len: int = 3,
+        max_tokens: int = 6,
     ):
         self.nlp = spacy.load(model)
 
@@ -35,6 +34,49 @@ class EntityExtractor:
         }
 
         self.min_len = min_len
+        self.max_tokens = max_tokens
+        self.abbrev_re = re.compile(r"\b[А-ЯЁ]{2,6}\b")
+
+    # --------------------------------------------------
+
+    def _is_retrieval_entity(self, span: List[spacy.tokens.Token]) -> bool:
+        """
+        Structural filter: decide if span is retrieval-useful.
+        """
+
+        # too short
+        if len(span) == 0 or len(span) > self.max_tokens:
+            return False
+
+        # head token
+        head = span[-1]
+
+        # dependency-based filtering
+        if head.dep_ in {"obl", "obj"}:
+            return False
+
+        # single noun → only if PROPN
+        if len(span) == 1:
+            return head.pos_ == "PROPN"
+
+        # verb-headed constructions → no
+        if any(t.pos_ == "VERB" for t in span):
+            return False
+
+        # capitalization / properness signal
+        if any(t.is_title for t in span):
+            return True
+
+        if all(t.pos_ == "PROPN" for t in span):
+            return True
+
+        # adjective + noun concepts are allowed
+        if span[0].pos_ == "ADJ" and span[-1].pos_ == "NOUN":
+            return True
+
+        return False
+
+    # --------------------------------------------------
 
     def extract(self, text: str) -> List[str]:
         doc = self.nlp(text)
@@ -42,48 +84,64 @@ class EntityExtractor:
         entities: List[str] = []
         seen = set()
 
-        # --------------------------------------------------
-        # 1️⃣ Primary: spaCy NER
-        # --------------------------------------------------
-        for ent in doc.ents:
-            if ent.label_ not in self.allowed_labels:
-                continue
-
-            val = ent.text.strip()
+        def add(val: str):
+            val = val.strip()
             if len(val) < self.min_len:
-                continue
-
+                return
             key = val.lower()
             if key in seen:
-                continue
-
+                return
             seen.add(key)
             entities.append(val)
 
-        if entities:
-            return entities
+        # ==================================================
+        # 1️⃣ spaCy NER (always trusted)
+        # ==================================================
+        for ent in doc.ents:
+            if ent.label_ in self.allowed_labels:
+                add(ent.text)
 
-        # --------------------------------------------------
-        # 2️⃣ Fallback: capitalized spans (RU-friendly)
-        # --------------------------------------------------
-        text_norm = text.strip()
+        # ==================================================
+        # 2️⃣ POS-based noun phrases (filtered!)
+        # Pattern: ADJ* + NOUN+
+        # ==================================================
+        tokens = list(doc)
+        i = 0
+        while i < len(tokens):
+            start = i
 
-        # ищем последовательности слов с заглавных букв
-        candidates = re.findall(
+            while i < len(tokens) and tokens[i].pos_ == "ADJ":
+                i += 1
+
+            if i < len(tokens) and tokens[i].pos_ == "NOUN":
+                while i < len(tokens) and tokens[i].pos_ == "NOUN":
+                    i += 1
+
+                span = tokens[start:i]
+
+                if self._is_retrieval_entity(span):
+                    text_span = " ".join(t.text for t in span)
+                    add(text_span)
+
+                    lemma_span = " ".join(t.lemma_ for t in span)
+                    add(lemma_span)
+            else:
+                i = start + 1
+
+        # ==================================================
+        # 3️⃣ Capitalized multi-word spans
+        # ==================================================
+        caps = re.findall(
             r"(?:[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)+)",
-            text_norm,
+            text,
         )
+        for c in caps:
+            add(c)
 
-        for c in candidates:
-            c = c.strip()
-            if len(c) < self.min_len:
-                continue
-
-            key = c.lower()
-            if key in seen:
-                continue
-
-            seen.add(key)
-            entities.append(c)
+        # ==================================================
+        # 4️⃣ Abbreviations
+        # ==================================================
+        for abbr in self.abbrev_re.findall(text):
+            add(abbr)
 
         return entities
