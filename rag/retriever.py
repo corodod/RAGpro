@@ -17,7 +17,7 @@ from rag.coverage import CoverageSelector
 class RetrieverConfig:
     # --- recall ---
     bm25_top_n: int = 800
-    dense_recall_top_n: int = 350
+    dense_recall_top_n: int = 400
 
     # --- entity-only recall limits ---
     bm25_top_n_entity: int = 0
@@ -36,7 +36,7 @@ class RetrieverConfig:
     entity_bias: float = 1.2
 
     # --- dense ranking ---
-    dense_stage1_top_n: int = 400
+    dense_stage1_top_n: int = 500
     dense_stage2_top_n: int = 200
 
     # --- final ---
@@ -48,20 +48,28 @@ class RetrieverConfig:
     rewrite_min_cosine: float = 0.75
 
     # --- cross-encoder ---
-    use_cross_encoder: bool = False
-    ce_strong_threshold: Optional[float] = None
+    use_cross_encoder: bool = True
+    ce_strong_threshold: Optional[float] = 3
     ce_top_n: int = 100
 
     # --- entity fallback ---
     use_entity_expansion: bool = True
     entity_bm25_top_n: int = 100
     entity_dense_recall_top_n: int = 30
-    entity_top_n_per_entity: int = 6
-    base_top_x: int = 6
+    entity_top_n_per_entity: int = 7
+    base_top_x: int = 7
 
     # --- coverage ---
     use_coverage: bool = False
 
+    # coverage selector params (tunable)
+    coverage_epsilon: float = 0.005
+    coverage_max_chunks: int = 20
+    coverage_alpha: float = 0.35
+
+    # how wide pool is given to coverage (prevents "returns 1-2 chunks" collapse)
+    coverage_pool_mult: int = 4        # pool = final_top_k * mult
+    coverage_pool_min: int = 60        # minimum pool size
 
 # ================= RETRIEVER =================
 class Retriever:
@@ -237,7 +245,52 @@ class Retriever:
         # >>> LOG: был ли hit по entity вообще
         self.last_debug["entity_hit"] = bool(ent_pool)
 
-        return self._strip(list(ent_pool.values())[: self.cfg.final_top_k])
+
+        final_candidates = list(ent_pool.values())
+
+        # ========== OPTIONAL COVERAGE (FINAL STAGE) ==========
+        if self.cfg.use_coverage and self.coverage_selector:
+
+            # гарантируем, что coverage_selector инициализирован с параметрами из конфига
+            coverage = CoverageSelector(
+                epsilon=self.cfg.coverage_epsilon,
+                max_chunks=self.cfg.coverage_max_chunks,
+                alpha=self.cfg.coverage_alpha,
+            )
+
+            # формируем достаточно широкий пул для coverage
+            pool_size = max(
+                self.cfg.final_top_k * self.cfg.coverage_pool_mult,
+                self.cfg.coverage_pool_min,
+            )
+            pool_for_coverage = [
+                                    c for c in final_candidates
+                                    if c.get("dense_emb") is not None
+                                ][:pool_size]
+            # считаем эмбеддинг запроса
+            q_emb = self.dense.encode_query(q0)
+
+            # coverage-aware отбор
+            selected = coverage.select(
+                query_emb=q_emb,
+                candidates=pool_for_coverage,
+                emb_key="dense_emb",
+            )
+
+            # 🔒 SAFETY: если coverage выбрал мало — добиваем top по dense_q0
+            if len(selected) < self.cfg.final_top_k:
+                used = {c["chunk_id"] for c in selected}
+                for c in pool_for_coverage:
+                    if len(selected) >= self.cfg.final_top_k:
+                        break
+                    if c["chunk_id"] not in used:
+                        selected.append(c)
+                        used.add(c["chunk_id"])
+
+            final_candidates = selected
+
+        # ========== FINAL ==========
+        return self._strip(final_candidates[: self.cfg.final_top_k])
 
     # --------------------------------------------------
     @staticmethod
