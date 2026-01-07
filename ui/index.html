@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <title>RAGRPO RAG Demo</title>
+  <title> RAG Demo</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 24px; max-width: 1100px; }
     textarea { width: 100%; height: 90px; }
@@ -17,12 +17,7 @@
   </style>
 </head>
 <body>
-  <h2>RAGRPO — Demo (question → chunks → answer)</h2>
-
-  <p class="muted">
-    1) Введи вопрос → Search (получишь кандидатов).<br/>
-    2) Отметь галочками нужные чанки → Generate answer.
-  </p>
+  <h2>RAG — Demo (question → chunks → answer)</h2>
 
   <textarea id="question" placeholder="Например: Кто совершил убийство, которое спровоцировало Первую мировую войну?"></textarea>
   <br/>
@@ -37,7 +32,6 @@
     <div class="col">
       <h3>Ответ</h3>
       <div id="answer" class="card answer">Пока нет ответа.</div>
-      <h3>Выбранные чанки</h3>
       <div id="selected"></div>
     </div>
   </div>
