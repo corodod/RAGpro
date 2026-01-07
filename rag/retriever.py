@@ -272,6 +272,34 @@ class Retriever:
             reverse=True,
         )
 
+        # ========== OPTIONAL CROSS-ENCODER RERANK ==========
+        if (
+                self.cfg.use_cross_encoder
+                and self.reranker is not None
+                and final_candidates
+        ):
+            # берем только top-N, чтобы не убить производительность
+            ce_pool = final_candidates[: self.cfg.ce_top_n]
+
+            # считаем ce_score
+            scored = self.reranker.score(q0, ce_pool)
+
+            # опциональный hard-filter (если хочешь)
+            if self.cfg.ce_strong_threshold is not None:
+                scored = [
+                    c for c in scored
+                    if c.get("ce_score", float("-inf")) >= self.cfg.ce_strong_threshold
+                ]
+
+            # сортируем по cross-encoder
+            scored = sorted(scored, key=lambda x: x["ce_score"], reverse=True)
+
+            # добавляем хвост без изменения порядка
+            used = {c["chunk_id"] for c in scored}
+            tail = [c for c in final_candidates if c["chunk_id"] not in used]
+
+            final_candidates = scored + tail
+
         # ========== OPTIONAL COVERAGE (FINAL STAGE) ==========
         if self.cfg.use_coverage and self.coverage_selector:
 
