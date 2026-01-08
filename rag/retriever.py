@@ -10,6 +10,7 @@ from rag.reranker import CrossEncoderReranker
 from rag.rewrite import QueryRewriter
 from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
+from rag.hyde import HyDEGenerator
 
 
 # ================= CONFIG =================
@@ -71,6 +72,16 @@ class RetrieverConfig:
     coverage_pool_mult: int = 4        # pool = final_top_k * mult
     coverage_pool_min: int = 60        # minimum pool size
 
+    # --- HyDE ---
+    use_hyde: bool = False
+    hyde_max_tokens: int = 120
+    hyde_dense_top_n: int = 200
+
+    # HyDE gating
+    hyde_only_if_no_entities: bool = True
+    hyde_max_query_len: int = 4
+
+
 # ================= RETRIEVER =================
 class Retriever:
     """
@@ -107,6 +118,15 @@ class Retriever:
 
         # >>> LOG: храним последнюю диагностику
         self.last_debug: Dict = {}
+
+        self.hyde = (
+            HyDEGenerator(
+                llm_device="cuda" if self.dense.model.device.type == "cuda" else "cpu",
+                max_new_tokens=self.cfg.hyde_max_tokens,
+            )
+            if self.cfg.use_hyde
+            else None
+        )
 
     @staticmethod
     def _rrf(rrf_k: int, rank: int) -> float:
@@ -180,6 +200,44 @@ class Retriever:
 
         if not cand:
             return []
+
+        # ========== HyDE dense recall (fallback) ==========
+        if self.cfg.use_hyde and self.hyde is not None:
+            use_hyde = True
+
+            if self.cfg.hyde_only_if_no_entities and entities:
+                use_hyde = False
+
+            if len(q0.split()) > self.cfg.hyde_max_query_len:
+                use_hyde = False
+
+            if use_hyde:
+                hyde_text = self.hyde.generate(q0)
+
+                # encode hypothetical document
+                hyde_vec = self.dense.encode_passage(hyde_text).reshape(1, -1)
+
+                scores, idxs = self.dense.index.search(
+                    hyde_vec,
+                    self.cfg.hyde_dense_top_n,
+                )
+
+                for i, idx in enumerate(idxs[0], start=1):
+                    if idx < 0:
+                        continue
+
+                    cid = self.dense.chunk_ids[idx]
+                    ensure(cid, {
+                        "chunk_id": cid,
+                        "title": self.dense.titles[idx],
+                        "text": self.dense.texts[idx],
+                    })
+
+                    cand[cid]["dense_rank"] = (
+                        i if cand[cid]["dense_rank"] is None
+                        else min(cand[cid]["dense_rank"], i)
+                    )
+                    cand[cid]["source"].add("hyde")
 
         # ========== fusion ==========
         if self.cfg.use_fusion:

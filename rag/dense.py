@@ -153,3 +153,13 @@ class DenseRetriever:
             out.append(item)
 
         return out
+
+    def encode_passage(self, text: str) -> np.ndarray:
+        """
+        Encode arbitrary document-like text (HyDE passage).
+        Returns normalized 1D embedding.
+        """
+        p = f"passage: {text}"
+        v = self.model.encode([p], convert_to_numpy=True).astype("float32")
+        v = self._normalize_2d(v)
+        return v[0]

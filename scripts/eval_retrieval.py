@@ -101,6 +101,18 @@ def main():
     if MAX_QUERIES is not None and QUERY_FRACTION is not None:
         raise ValueError("Use only one of MAX_QUERIES or QUERY_FRACTION")
 
+    # ---------- load chunk doc ids ----------
+    chunk_doc_ids = set()
+    with open(CHUNKS_PATH, encoding="utf-8") as f:
+        for line in f:
+            obj = json.loads(line)
+            cid = obj.get("chunk_id")
+            if cid:
+                chunk_doc_ids.add(cid.split("_", 1)[0])
+
+    print(f"[INFO] Docs in chunk index: {len(chunk_doc_ids)}")
+
+
     # ---------- load dataset ----------
     with open(EVAL_PATH, encoding="utf-8") as f:
         items = [json.loads(line) for line in f]
@@ -188,7 +200,11 @@ def main():
         )
 
         miss_stage = None
-        if not (recall_docs & gold):
+        missing_from_chunks = not any(g in chunk_doc_ids for g in gold)
+
+        if missing_from_chunks:
+            miss_stage = "no_chunk"
+        elif not (recall_docs & gold):
             miss_stage = "recall"
         elif not (set(pred_doc_ids[:20]) & gold):
             miss_stage = "rerank"
@@ -214,6 +230,7 @@ def main():
                 "question": question,
                 "gold_doc_ids": list(gold),
                 "miss_stage": miss_stage,
+                "missing_from_chunks": missing_from_chunks,
                 "entities": retriever.last_debug.get("entities"),
                 "entity_hit": retriever.last_debug.get("entity_hit"),
             })
@@ -255,6 +272,17 @@ def main():
             print(f"{b:6s}: {sum(xs)/len(xs):.3f}")
 
     # ---------- save reports ----------
+
+    no_chunk = sum(
+        1 for x in failures["no_hit"]
+        if x.get("miss_stage") == "no_chunk"
+    )
+
+    print("\n================ NO_HIT BREAKDOWN ================")
+    print(f"NO_HIT total:        {len(failures['no_hit'])}")
+    print(f"NO_CHUNK (absent):   {no_chunk}")
+    print(f"RECALL miss:         {sum(1 for x in failures['no_hit'] if x['miss_stage']=='recall')}")
+    print(f"RERANK miss:         {sum(1 for x in failures['no_hit'] if x['miss_stage']=='rerank')}")
     def dump(name, data):
         path = REPORT_DIR / f"{name}.jsonl"
         with open(path, "w", encoding="utf-8") as f:
