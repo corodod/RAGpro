@@ -32,73 +32,93 @@ def cosine(a, b):
 
 chunk_count = 0
 
+# 🔑 храним последний чанк предыдущего документа
+prev_last_chunk: str | None = None
+
+
 with open(RAW_PATH, encoding="utf-8") as f_in, \
      open(OUT_PATH, "w", encoding="utf-8") as f_out:
 
     for line in tqdm(f_in, desc="Semantic splitting"):
         doc = json.loads(line)
+        doc_id = str(doc["doc_id"])
+        title = doc.get("title", "")
+        text = (doc.get("text") or "").strip()
+
+        if not text:
+            continue
 
         sentences = [
             s.text.strip()
-            for s in sentenize(doc["text"])
+            for s in sentenize(text)
             if len(s.text.strip()) > 20
         ]
 
-        if len(sentences) < 2:
-            continue
+        doc_chunks = []
 
-        sent_embs = model.encode(
-            [f"passage: {s}" for s in sentences],
-            normalize_embeddings=True,
-        )
+        # ==================================================
+        # CASE 1: нормальный документ → semantic chunking
+        # ==================================================
+        if len(sentences) >= 2:
+            sent_embs = model.encode(
+                [f"passage: {s}" for s in sentences],
+                normalize_embeddings=True,
+            )
 
-        # ===== init first chunk =====
-        current_chunk = sentences[0]
+            current_chunk = sentences[0]
+            chunk_anchor_emb = sent_embs[0]
+            chunk_mean_emb = sent_embs[0]
 
-        chunk_anchor_emb = sent_embs[0]     # 🔒 фиксированный якорь
-        chunk_mean_emb = sent_embs[0]       # агрегат (не для decision)
+            for sent, emb in zip(sentences[1:], sent_embs[1:]):
+                sim = cosine(chunk_anchor_emb, emb)
 
-        for sent, emb in zip(sentences[1:], sent_embs[1:]):
+                if sim >= SIM_THRESHOLD and len(current_chunk) + len(sent) < MAX_CHARS:
+                    current_chunk += " " + sent
+                    chunk_mean_emb = chunk_mean_emb + emb
+                    chunk_mean_emb /= np.linalg.norm(chunk_mean_emb) + 1e-12
+                else:
+                    if len(current_chunk) >= MIN_CHARS:
+                        doc_chunks.append(current_chunk)
 
-            # 🔑 similarity СТРОГО с anchor
-            sim = cosine(chunk_anchor_emb, emb)
+                    current_chunk = sent
+                    chunk_anchor_emb = emb
+                    chunk_mean_emb = emb
 
-            if sim >= SIM_THRESHOLD and len(current_chunk) + len(sent) < MAX_CHARS:
-                current_chunk += " " + sent
+            if len(current_chunk) >= MIN_CHARS:
+                doc_chunks.append(current_chunk)
 
-                # обновляем ТОЛЬКО mean
-                chunk_mean_emb = chunk_mean_emb + emb
-                chunk_mean_emb /= np.linalg.norm(chunk_mean_emb) + 1e-12
-
+        # ==================================================
+        # CASE 2: короткий / плохой документ
+        # ==================================================
+        if not doc_chunks:
+            if prev_last_chunk:
+                merged = (
+                    text.strip()
+                    + "\n\n[КОНТЕКСТ]\n"
+                    + prev_last_chunk.strip()
+                )
+                doc_chunks = [merged]
             else:
-                # ---- flush chunk ----
-                if len(current_chunk) >= MIN_CHARS:
-                    record = {
-                        "chunk_id": f"{doc['doc_id']}_{chunk_count}",
-                        "doc_id": doc["doc_id"],
-                        "title": doc.get("title", ""),
-                        "section": "body",
-                        "text": current_chunk,
-                    }
-                    f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    chunk_count += 1
+                # крайний случай: вообще без контекста
+                doc_chunks = [text.strip()]
 
-                # ---- start new chunk ----
-                current_chunk = sent
-                chunk_anchor_emb = emb
-                chunk_mean_emb = emb
-
-        # ---- last chunk ----
-        if len(current_chunk) >= MIN_CHARS:
+        # ==================================================
+        # SAVE CHUNKS
+        # ==================================================
+        for chunk_text in doc_chunks:
             record = {
-                "chunk_id": f"{doc['doc_id']}_{chunk_count}",
-                "doc_id": doc["doc_id"],
-                "title": doc.get("title", ""),
+                "chunk_id": f"{doc_id}_{chunk_count}",
+                "doc_id": doc_id,
+                "title": title,
                 "section": "body",
-                "text": current_chunk,
+                "text": chunk_text,
             }
             f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
             chunk_count += 1
+
+        # 🔒 обновляем последний чанк документа
+        prev_last_chunk = doc_chunks[-1]
+
 
 print(f"[OK] Saved chunks to {OUT_PATH}")
 print(f"[OK] Total chunks: {chunk_count}")

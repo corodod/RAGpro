@@ -1,0 +1,9 @@
+{
+  "stats": {
+    "missing_doc_ids_total": 0,
+    "documents_found": 0,
+    "documents_not_found": 0
+  },
+  "documents": [],
+  "not_found_doc_ids": []
+}
