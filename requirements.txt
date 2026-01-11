@@ -1,21 +1,45 @@
-# ===== Core numeric stack =====
+# ===============================
+# Core numeric / torch stack
+# ===============================
 numpy==1.26.4
-torch>=2.2.0
+torch==2.0.1
 
-# ===== Transformers / embeddings =====
-transformers>=4.53.0
-sentence-transformers==2.7.0
 
-# ===== Vector search =====
+# ===============================
+# Transformers / HF stack
+# ===============================
+transformers==4.30.2
+sentence-transformers==2.2.2
+tokenizers==0.13.3
+huggingface-hub==0.20.3
+accelerate==0.21.0
+
+
+# ===============================
+# NER
+# ===============================
+# используется transformers.pipeline("ner")
+# модель: 0x7o/rubert-base-massive-ner
+
+
+# ===============================
+# Vector search
+# ===============================
 faiss-cpu==1.7.4
 
-# ===== Data & utils =====
+
+# ===============================
+# Data & utils
+# ===============================
 datasets==2.18.0
 tqdm==4.67.1
 nltk
 razdel==0.5.0
 
-# ===== API =====
+
+# ===============================
+# API
+# ===============================
 fastapi==0.124.4
 pydantic==2.12.5
 uvicorn==0.29.0
