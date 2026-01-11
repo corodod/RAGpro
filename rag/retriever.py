@@ -11,6 +11,7 @@ from rag.rewrite import QueryRewriter
 from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
 from rag.hyde import HyDEGenerator
+from rag.query2doc import Query2DocGenerator
 
 
 # ================= CONFIG =================
@@ -81,6 +82,19 @@ class RetrieverConfig:
     hyde_only_if_no_entities: bool = True
     hyde_max_query_len: int = 4
 
+    # --- Query2Doc ---
+    use_query2doc: bool = True
+    use_query2doc_bm25: bool = True
+    use_query2doc_dense: bool = False
+
+    query2doc_max_tokens: int = 128
+    query2doc_bm25_top_n: int = 300
+    query2doc_dense_top_n: int = 200
+
+    # Query2Doc gating
+    query2doc_only_if_no_entities: bool = True
+    query2doc_max_query_len: int = 6
+
 
 # ================= RETRIEVER =================
 class Retriever:
@@ -125,6 +139,15 @@ class Retriever:
                 max_new_tokens=self.cfg.hyde_max_tokens,
             )
             if self.cfg.use_hyde
+            else None
+        )
+
+        self.query2doc = (
+            Query2DocGenerator(
+                llm_device="cuda" if self.dense.model.device.type == "cuda" else "cpu",
+                max_new_tokens=self.cfg.query2doc_max_tokens,
+            )
+            if self.cfg.use_query2doc
             else None
         )
 
@@ -201,6 +224,51 @@ class Retriever:
         if not cand:
             return []
 
+        # ========== Query2Doc recall ==========
+        if self.cfg.use_query2doc and self.query2doc is not None:
+            use_q2d = True
+
+            if self.cfg.query2doc_only_if_no_entities and entities:
+                use_q2d = False
+
+            if len(q0.split()) > self.cfg.query2doc_max_query_len:
+                use_q2d = False
+
+            if use_q2d:
+                q2d_text = self.query2doc.generate(q0)
+
+                # --- BM25(query + pseudo_doc) ---
+                if self.cfg.use_query2doc_bm25:
+                    bm25_query = f"{q0}\n{q2d_text}"
+                    for i, r in enumerate(
+                        self.bm25.search(bm25_query, self.cfg.query2doc_bm25_top_n),
+                        start=1,
+                    ):
+                        cid = r["chunk_id"]
+                        ensure(cid, r)
+                        cand[cid]["bm25_rank"] = (
+                            i if cand[cid]["bm25_rank"] is None
+                            else min(cand[cid]["bm25_rank"], i)
+                        )
+                        cand[cid]["source"].add("query2doc_bm25")
+
+                # --- Dense(query [SEP] pseudo_doc) ---
+                if self.cfg.use_query2doc_dense:
+                    # dense_query = f"{q0}\n{q2d_text}"
+                    dense_query = q2d_text
+                    for i, r in enumerate(
+                        self.dense.search(dense_query, self.cfg.query2doc_dense_top_n),
+                        start=1,
+                    ):
+                        cid = r["chunk_id"]
+                        ensure(cid, r)
+                        cand[cid]["dense_rank"] = (
+                            i if cand[cid]["dense_rank"] is None
+                            else min(cand[cid]["dense_rank"], i)
+                        )
+                        cand[cid]["source"].add("query2doc_dense")
+
+
         # ========== HyDE dense recall (fallback) ==========
         if self.cfg.use_hyde and self.hyde is not None:
             use_hyde = True
@@ -244,9 +312,11 @@ class Retriever:
             for c in cand.values():
                 fs = 0.0
                 if c["bm25_rank"] is not None:
-                    fs += self._rrf(self.cfg.rrf_k, c["bm25_rank"])
+                    # fs += self._rrf(self.cfg.rrf_k, c["bm25_rank"])
+                    fs += self.cfg.w_bm25 * self._rrf(self.cfg.rrf_k, c["bm25_rank"])
                 if c["dense_rank"] is not None:
-                    fs += self._rrf(self.cfg.rrf_k, c["dense_rank"])
+                    # fs += self._rrf(self.cfg.rrf_k, c["dense_rank"])
+                    fs += self.cfg.w_dense * self._rrf(self.cfg.rrf_k, c["dense_rank"])
                 c["fused_score"] = fs
 
             cand = dict(

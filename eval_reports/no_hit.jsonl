@@ -1,6 +1,10 @@
+{"id": null, "question": "Что окончил Пушкин?", "gold_doc_ids": ["3847", "3849"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
+{"id": null, "question": "Какой разработчик создал Сталкер?", "gold_doc_ids": ["9373"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
 {"id": null, "question": "На чем играет Башмет?", "gold_doc_ids": ["11166"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
+{"id": null, "question": "Когда образована Красная армия?", "gold_doc_ids": ["28067"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Красная армия", "красный армия"], "entity_hit": true}
 {"id": null, "question": "Куда впадает река Енисей?", "gold_doc_ids": ["15373"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Енисей"], "entity_hit": true}
 {"id": null, "question": "Кто написал известную трилогию о хоббитах?", "gold_doc_ids": ["14815"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
+{"id": null, "question": "Какой город был столицей Японии с 794 по 1868 год?", "gold_doc_ids": ["13014"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Японии"], "entity_hit": true}
 {"id": null, "question": "Какова высота Биг Бена?", "gold_doc_ids": ["27355"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Какова высота", "Биг Бена"], "entity_hit": true}
 {"id": null, "question": "Какова плотность керосина?", "gold_doc_ids": ["28842"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
 {"id": null, "question": "Какой оригинальный язык у Ведьмака?", "gold_doc_ids": ["18549"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["оригинальный язык"], "entity_hit": true}
@@ -8,20 +12,18 @@
 {"id": null, "question": "Кто написал древнегреческую трагедию \"Семеро против Фив\"?", "gold_doc_ids": ["43343"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
 {"id": null, "question": "Какую религию исповедуют татары?", "gold_doc_ids": ["14670"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
 {"id": null, "question": "Где был создан Эпос о Гильгамеше?", "gold_doc_ids": ["33475", "33477"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
-{"id": null, "question": "Кто оператор фильма Цирк?", "gold_doc_ids": ["10052"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
 {"id": null, "question": "Где устье реки Енисей?", "gold_doc_ids": ["15373"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Енисей"], "entity_hit": true}
+{"id": null, "question": "Столицей чего является Нижний Новгород?", "gold_doc_ids": ["13579"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Нижний Новгород"], "entity_hit": true}
 {"id": null, "question": "На каком языке Шарль де Костер написал «Легенду о Тиле Уленшпигеле»?", "gold_doc_ids": ["42864"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Тиле Уленшпигеле"], "entity_hit": true}
 {"id": null, "question": "В каком году закончили выпускать автомобиль оку?", "gold_doc_ids": ["32979"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
 {"id": null, "question": "Кто во время учёбы Гарри всё время был в школе?", "gold_doc_ids": ["7747"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
 {"id": null, "question": "Кто была мать Ивана Грозного?", "gold_doc_ids": ["7942"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Ивана Грозного"], "entity_hit": true}
 {"id": null, "question": "Какой уральский город славится своими художественными изделиями из чугуна?", "gold_doc_ids": ["56944"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["уральский город"], "entity_hit": true}
 {"id": null, "question": "Когда прекратил существование комсомол?", "gold_doc_ids": ["21731"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
+{"id": null, "question": "Что служит упором для ног всадника при верховой езде?", "gold_doc_ids": ["52091", "52095"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["верховой езде", "верховой езда"], "entity_hit": true}
 {"id": null, "question": "В каком месяце закончилась 2 мировая война?", "gold_doc_ids": ["1603"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["мировая война", "мировой война"], "entity_hit": true}
-{"id": null, "question": "Какая певица родилась во Франции, жила в Польше, а сегодня ее город - Санкт-Петербург?", "gold_doc_ids": ["52537"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Франции", "Польше", "Санкт-Петербург"], "entity_hit": true}
+{"id": null, "question": "Когда образована Российская Федерация?", "gold_doc_ids": ["299", "259", "306"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Российская Федерация"], "entity_hit": true}
 {"id": null, "question": "В каком месяце был запущен первый советский спутник Земли?", "gold_doc_ids": ["31656"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Земли", "первый советский спутник"], "entity_hit": true}
 {"id": null, "question": "Какова температура плавления поваренной соли?", "gold_doc_ids": ["28871", "28872"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Какова температура плавления", "какова температура плавление", "поваренной соли", "поваренный соль"], "entity_hit": true}
 {"id": null, "question": "Кто мать у Тимати?", "gold_doc_ids": ["7612", "7623"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
 {"id": null, "question": "Как иначе называется канун Рождества Христова?", "gold_doc_ids": ["36420", "36421"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Рождества Христова"], "entity_hit": true}
-{"id": null, "question": "Какой вид транспорта, если судить по названию, самый столичный?", "gold_doc_ids": ["22258"], "miss_stage": "recall", "missing_from_chunks": false, "entities": [], "entity_hit": false}
-{"id": null, "question": "К какой стране принадлежит производитель BMW?", "gold_doc_ids": ["12795"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["BMW"], "entity_hit": true}
-{"id": null, "question": "Кто архитектор здания биржи стрелки Васильевского острова?", "gold_doc_ids": ["16227", "16226"], "miss_stage": "recall", "missing_from_chunks": false, "entities": ["Васильевского острова", "васильевский остров"], "entity_hit": true}

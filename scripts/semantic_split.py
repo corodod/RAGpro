@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,17 @@ from tqdm import tqdm
 from razdel import sentenize
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline, AutoTokenizer
+
+
+# ================== FLAGS ==================
+# 1) извлекать сущности из ДЛИННЫХ документов (short никогда не NER-им)
+EXTRACT_ENTITIES = True
+
+# 2) присоединять/не присоединять CONTEXT CHUNK к short-докам
+ATTACH_CONTEXT_CHUNK_TO_SHORT = True
+
+# 3) присоединять/не присоединять ENTITIES от соседнего long-дока к short-докам
+ATTACH_ENTITIES_TO_SHORT = True
 
 
 # ================== PATHS ==================
@@ -30,13 +42,10 @@ ner = pipeline(
     "ner",
     model=NER_MODEL,
     aggregation_strategy="simple",
-    device=0, # поставь 0 если есть GPU
+    device=0,  # поставь -1 если CPU
 )
 
-ner_tokenizer = AutoTokenizer.from_pretrained(
-    NER_MODEL,
-    use_fast=True,
-)
+ner_tokenizer = AutoTokenizer.from_pretrained(NER_MODEL, use_fast=True)
 
 
 # ================== PARAMS ==================
@@ -50,18 +59,16 @@ DOC_EMB_MAX_CHARS = 1200
 MERGED_MAX_CHARS = 1200
 
 # entities
-ENTITY_MAX = 12
+ENTITY_MAX = 10
 ENTITY_PREFIX_HEADER = "[СУЩНОСТИ]"
 ENTITY_JOINER = "; "
 NER_MAX_TOKENS = 480  # безопасно <512
 
-# только то, что реально нужно
-ALLOWED_ENTITY_TYPES = {
-    "PERSON",
-    "ORG",
-    "LOC",
-    "EVENT",
-}
+ENTITY_SCORE_THRESHOLD = 0.37
+MAX_ENTITY_TOKENS = 5
+
+ALLOWED_ENTITY_TYPES = {"PERSON", "ORG", "LOC", "EVENT"}
+
 ENTITY_LABEL_MAP = {
     # люди
     "PERSON": "PERSON",
@@ -79,28 +86,61 @@ ENTITY_LABEL_MAP = {
 }
 
 
+# ================== REGEX ==================
+EDGE_PUNCT_RE = re.compile(r'^[\s"«».,;:!?—–-]+|[\s"«».,;:!?—–-]+$')
+PREP_PREFIX_RE = re.compile(r"^(из|в|на|по|при)\s+", re.IGNORECASE)
+ABBR_RE = re.compile(r"^[A-ZА-ЯЁ]{2,10}$")
+
+
 # ================== UTILS ==================
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b))
 
 
 def embed_doc(text: str) -> np.ndarray:
-    text = (text or "").strip()
-    if len(text) > DOC_EMB_MAX_CHARS:
-        text = text[:DOC_EMB_MAX_CHARS]
-    return embedder.encode(
-        [f"passage: {text}"],
-        normalize_embeddings=True,
-    )[0]
+    text = (text or "").strip()[:DOC_EMB_MAX_CHARS]
+    return embedder.encode([f"passage: {text}"], normalize_embeddings=True)[0]
 
 
-def looks_like_proper_name(text: str) -> bool:
-    return any(ch.isupper() for ch in text)
+def normalize_entity(text: str) -> str:
+    t = (text or "").strip()
+    t = EDGE_PUNCT_RE.sub("", t)
+    t = PREP_PREFIX_RE.sub("", t)
+    return " ".join(t.split())
 
 
-# ================== NER ==================
+def is_abbreviation(text: str) -> bool:
+    return bool(ABBR_RE.fullmatch((text or "").strip()))
+
+
+def norm_key_first3(text: str) -> str:
+    t = normalize_entity(text).lower()
+    t = re.sub(r"[^\w]", "", t)
+    return t[:3]
+
+
+def dedup_by_first3_keep_form(entities: List[str], limit: int) -> List[str]:
+    seen_keys = set()
+    uniq: List[str] = []
+    for ent in entities:
+        k = norm_key_first3(ent)
+        if not k:
+            continue
+        if k not in seen_keys:
+            uniq.append(ent)  # сохраняем реальную форму
+            seen_keys.add(k)
+        if len(uniq) >= limit:
+            break
+    return uniq
+
+
+# ================== NER (ТОЛЬКО ДЛИННЫЕ ДОКИ) ==================
 def extract_doc_entities(text: str) -> List[str]:
-    if not text:
+    """
+    Извлекаем сущности из одного ДЛИННОГО документа.
+    Short-доки сюда не должны попадать (логика main() это обеспечивает).
+    """
+    if not EXTRACT_ENTITIES or not text:
         return []
 
     sentences = [s.text.strip() for s in sentenize(text) if s.text.strip()]
@@ -108,59 +148,60 @@ def extract_doc_entities(text: str) -> List[str]:
         return []
 
     chunks: List[str] = []
-    current: List[str] = []
-    current_len = 0
+    cur: List[str] = []
+    cur_len = 0
 
-    for sent in sentences:
-        sent_len = len(ner_tokenizer.encode(sent, add_special_tokens=False))
+    for s in sentences:
+        l = len(ner_tokenizer.encode(s, add_special_tokens=False))
 
-        if sent_len > NER_MAX_TOKENS:
-            if current:
-                chunks.append(" ".join(current))
-                current = []
-                current_len = 0
-            chunks.append(sent)
+        if l > NER_MAX_TOKENS:
+            if cur:
+                chunks.append(" ".join(cur))
+                cur, cur_len = [], 0
+            toks = ner_tokenizer.encode(s, add_special_tokens=False)[:NER_MAX_TOKENS]
+            chunks.append(ner_tokenizer.decode(toks, skip_special_tokens=True))
             continue
 
-        if current_len + sent_len <= NER_MAX_TOKENS:
-            current.append(sent)
-            current_len += sent_len
-        else:
-            chunks.append(" ".join(current))
-            current = [sent]
-            current_len = sent_len
+        if cur_len + l > NER_MAX_TOKENS:
+            if cur:
+                chunks.append(" ".join(cur))
+            cur, cur_len = [], 0
 
-    if current:
-        chunks.append(" ".join(current))
+        cur.append(s)
+        cur_len += l
 
-    collected: List[str] = []
+    if cur:
+        chunks.append(" ".join(cur))
+
+    raw_entities: List[str] = []
 
     for chunk in chunks:
-        ents = ner(chunk)
-
-        for e in ents:
-            raw_label = e.get("entity_group")
-            label = ENTITY_LABEL_MAP.get(raw_label)
-
-            if not label:
+        for e in ner(chunk):
+            label = ENTITY_LABEL_MAP.get(e.get("entity_group"))
+            if label not in ALLOWED_ENTITY_TYPES:
                 continue
 
-            if label in ALLOWED_ENTITY_TYPES:
-                word = e.get("word", "").strip()
-                word = word.strip(" .,—–-")
+            word = normalize_entity(e.get("word", ""))
+            if not word:
+                continue
 
-                if len(word) >= 3 and looks_like_proper_name(word):
-                    collected.append(word)
+            # ❌ режем слишком длинные сущности
+            # считаем по словам, а не по токенам модели
+            if len(word.split()) > MAX_ENTITY_TOKENS:
+                continue
 
-    # dedup с сохранением порядка
-    seen = set()
-    uniq: List[str] = []
-    for e in collected:
-        if e not in seen:
-            uniq.append(e)
-            seen.add(e)
+            score = float(e.get("score", 0.0))
 
-    return uniq[:ENTITY_MAX]
+            # аббревиатуры пропускаем без score
+            if is_abbreviation(word):
+                raw_entities.append(word)
+                continue
+
+            # обычные сущности: score + длина
+            if score >= ENTITY_SCORE_THRESHOLD and len(word) >= 2:
+                raw_entities.append(word)
+
+    return dedup_by_first3_keep_form(raw_entities, ENTITY_MAX)
 
 
 def build_entity_prefix(entities: List[str]) -> str:
@@ -170,36 +211,31 @@ def build_entity_prefix(entities: List[str]) -> str:
 
 
 def with_entities(entities: List[str], text: str) -> str:
-    prefix = build_entity_prefix(entities)
-    return prefix + text.strip() if prefix else text.strip()
+    return build_entity_prefix(entities) + text.strip() if entities else text.strip()
 
 
 # ================== SEMANTIC CHUNKING ==================
 def semantic_chunk_doc(text: str) -> List[str]:
-    sentences = [s.text.strip() for s in sentenize(text) if len(s.text.strip()) > 20]
-    if len(sentences) < 2:
+    sents = [s.text.strip() for s in sentenize(text) if len(s.text.strip()) > 20]
+    if len(sents) < 2:
         return []
 
-    sent_embs = embedder.encode(
-        [f"passage: {s}" for s in sentences],
-        normalize_embeddings=True,
-    )
+    embs = embedder.encode([f"passage: {s}" for s in sents], normalize_embeddings=True)
 
     chunks: List[str] = []
-    current = sentences[0]
-    anchor = sent_embs[0]
+    cur = sents[0]
+    anchor = embs[0]
 
-    for sent, emb in zip(sentences[1:], sent_embs[1:]):
-        if cosine(anchor, emb) >= SIM_THRESHOLD and len(current) + len(sent) < MAX_CHARS:
-            current += " " + sent
+    for s, e in zip(sents[1:], embs[1:]):
+        if cosine(anchor, e) >= SIM_THRESHOLD and len(cur) + len(s) < MAX_CHARS:
+            cur += " " + s
         else:
-            if len(current) >= MIN_CHARS:
-                chunks.append(current)
-            current = sent
-            anchor = emb
+            if len(cur) >= MIN_CHARS:
+                chunks.append(cur)
+            cur, anchor = s, e
 
-    if len(current) >= MIN_CHARS:
-        chunks.append(current)
+    if len(cur) >= MIN_CHARS:
+        chunks.append(cur)
 
     return chunks
 
@@ -212,8 +248,10 @@ def build_short_chunk(
     use_prev: bool,
     use_next: bool,
 ) -> str:
-    parts: List[str] = []
+    if not ATTACH_CONTEXT_CHUNK_TO_SHORT:
+        return short_text.strip()
 
+    parts: List[str] = []
     if use_prev and prev_chunk:
         parts.append("[КОНТЕКСТ_ПРЕД]\n" + prev_chunk.strip())
 
@@ -222,15 +260,14 @@ def build_short_chunk(
     if use_next and next_chunk:
         parts.append("[КОНТЕКСТ_СЛЕД]\n" + next_chunk.strip())
 
-    merged = "\n\n".join(parts)
-    return merged[:MERGED_MAX_CHARS].rstrip()
+    return "\n\n".join(parts)[:MERGED_MAX_CHARS].rstrip()
 
 
 # ================== MAIN ==================
 def main() -> None:
     chunk_count = 0
 
-    prev_normal_emb: Optional[np.ndarray] = None
+    prev_emb: Optional[np.ndarray] = None
     prev_last_chunk: Optional[str] = None
     prev_entities: List[str] = []
 
@@ -246,27 +283,26 @@ def main() -> None:
             if not text:
                 continue
 
-            # ---------- NORMAL DOC ----------
             doc_chunks = semantic_chunk_doc(text)
 
+            # ---------- LONG DOC ----------
             if doc_chunks:
+                # ✅ сущности извлекаем только здесь (из long)
                 entities = extract_doc_entities(text)
+                doc_emb = embed_doc(text)
 
                 first_chunk = with_entities(entities, doc_chunks[0])
                 last_chunk = with_entities(entities, doc_chunks[-1])
-                doc_emb = embed_doc(text)
 
-                # обработка short-доков перед normal
+                # обработка short-доков, которые встретились перед этим long
                 for sd in pending_shorts:
-                    short_emb = sd["emb"]
-
-                    sim_prev = cosine(short_emb, prev_normal_emb) if prev_normal_emb is not None else -1
-                    sim_next = cosine(short_emb, doc_emb)
+                    sim_prev = cosine(sd["emb"], prev_emb) if prev_emb is not None else -1
+                    sim_next = cosine(sd["emb"], doc_emb)
 
                     use_prev = sim_prev >= sim_next
                     use_next = not use_prev
 
-                    merged = build_short_chunk(
+                    merged_text = build_short_chunk(
                         short_text=sd["text"],
                         prev_chunk=prev_last_chunk,
                         next_chunk=first_chunk,
@@ -274,19 +310,25 @@ def main() -> None:
                         use_next=use_next,
                     )
 
+                    # ✅ short никогда не NER-им
+                    merged_entities: List[str] = []
+                    if ATTACH_ENTITIES_TO_SHORT:
+                        neighbor = prev_entities if use_prev else entities
+                        merged_entities = neighbor[:ENTITY_MAX]
+
                     f_out.write(json.dumps({
-                        "chunk_id": f"{sd['doc_id']}_{chunk_count}",
+                        "chunk_id": f'{sd["doc_id"]}_{chunk_count}',
                         "doc_id": sd["doc_id"],
-                        "title": sd["title"],
+                        "title": sd.get("title", ""),
                         "section": "body",
-                        "text": merged,
-                        "entities": prev_entities,
+                        "text": merged_text,
+                        "entities": merged_entities,
                     }, ensure_ascii=False) + "\n")
                     chunk_count += 1
 
                 pending_shorts.clear()
 
-                # normal chunks
+                # пишем чанки long-дока
                 for ch in doc_chunks:
                     f_out.write(json.dumps({
                         "chunk_id": f"{doc_id}_{chunk_count}",
@@ -298,7 +340,7 @@ def main() -> None:
                     }, ensure_ascii=False) + "\n")
                     chunk_count += 1
 
-                prev_normal_emb = doc_emb
+                prev_emb = doc_emb
                 prev_last_chunk = last_chunk
                 prev_entities = entities
 
@@ -316,6 +358,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # тест: тут НЕ извлекаем сущности, потому что тест — это просто строка.
+    # Если хочешь проверить NER — прогоняй через extract_doc_entities вручную.
+    # Но помни: по твоей логике это "short-like" и в пайплайне NER по нему не будет.
     print(extract_doc_entities("ЦСКА — российский футбольный клуб из города Москва. Валерий Газзаев был тренером ЦСКА."))
     print(ner("ЦСКА — российский футбольный клуб из города Москва. Валерий Газзаев был тренером ЦСКА."))
     main()
