@@ -17,8 +17,11 @@ from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
 from rag.generator import AnswerGenerator, GeneratorConfig
 from rag.retriever import Retriever, RetrieverConfig
+from rag.multihop import MultiHopRetriever
+from rag.planner import MultiHopPlanner
 
-
+USE_MULTIHOP = 1
+MAX_HOPS = 4
 # ================= PATHS =================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
@@ -40,7 +43,7 @@ dense = DenseRetriever(
 )
 dense.load()
 
-retriever = Retriever(
+base_retriever = Retriever(
     bm25=bm25,
     dense=dense,
     reranker=CrossEncoderReranker(device=device),
@@ -57,6 +60,22 @@ generator = AnswerGenerator(
         max_new_tokens=80,
     )
 )
+
+if USE_MULTIHOP:
+    planner = MultiHopPlanner(
+        llm=generator,
+        max_hops=MAX_HOPS,
+    )
+
+    retriever = MultiHopRetriever(
+        base_retriever=base_retriever,
+        planner=planner,
+        max_hops=MAX_HOPS,
+        debug=True,
+    )
+else:
+    retriever = base_retriever
+
 
 # ---------- FastAPI ----------
 app = FastAPI(title="RAGRPO Demo")
