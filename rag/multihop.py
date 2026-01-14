@@ -3,34 +3,54 @@
 from typing import List
 from rag.retriever import Retriever
 from rag.planner import MultiHopPlanner
-
+from rag.generator import AnswerGenerator
 
 class MultiHopRetriever:
+    """
+    Обёртка над базовым Retriever, поддерживающая мультихоп.
+    - use_multihop: True → используем MultiHopPlanner
+    - max_hops: глубина мультихопа
+    Если use_multihop=False, работает как обычный Retriever.
+    """
+
     def __init__(
         self,
         base_retriever: Retriever,
-        planner: MultiHopPlanner,
+        generator: AnswerGenerator,
+        use_multihop: bool = True,
         max_hops: int = 4,
         debug: bool = False,
     ):
         self.base_retriever = base_retriever
-        self.planner = planner
-        self.max_hops = max_hops
+        self.use_multihop = use_multihop
         self.debug = debug
+
+        if self.use_multihop:
+            self.planner = MultiHopPlanner(llm=generator, max_hops=max_hops)
+            self.max_hops = max_hops
+        else:
+            self.planner = None
+            self.max_hops = 1  # просто один шаг
 
     def _extract_facts(self, docs) -> List[str]:
         """
-        Convert retrieved docs into short factual strings
+        Преобразует retrieved docs в короткие факты.
         """
         facts = []
         for d in docs:
-            text = d.get("text", "")
-            text = text.split(".")[0]
+            text = d.get("text", "").split(".")[0]
             title = d.get("title", "")
             facts.append(f"{title}: {text}")
         return facts
 
     def retrieve(self, question: str):
+        """
+        Возвращает список документов для генератора.
+        Если use_multihop=False, сразу вызывает базовый retriever.
+        """
+        if not self.use_multihop:
+            return self.base_retriever.retrieve(question)
+
         all_docs = []
         all_facts = []
         previous_queries = []
@@ -62,5 +82,13 @@ class MultiHopRetriever:
 
             current_query = next_query
 
-        # финальный rerank по исходному вопросу
-        return self.base_retriever.rerank(question, all_docs)
+        # Финальный rerank по исходному вопросу через reranker базового Retriever
+        # если есть cross-encoder, то применяем score к списку документов
+        if self.base_retriever.reranker is not None:
+            docs_copy = [dict(d) for d in all_docs]  # чтобы не мутировать оригиналы
+            scored = self.base_retriever.reranker.score(question, docs_copy)
+            # сортируем по ce_score
+            scored_sorted = sorted(scored, key=lambda x: x.get("ce_score", 0.0), reverse=True)
+            return scored_sorted
+
+        return all_docs

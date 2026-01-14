@@ -20,8 +20,6 @@ from rag.retriever import Retriever, RetrieverConfig
 from rag.multihop import MultiHopRetriever
 from rag.planner import MultiHopPlanner
 
-USE_MULTIHOP = 1
-MAX_HOPS = 4
 # ================= PATHS =================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
@@ -60,21 +58,13 @@ generator = AnswerGenerator(
         max_new_tokens=80,
     )
 )
-
-if USE_MULTIHOP:
-    planner = MultiHopPlanner(
-        llm=generator,
-        max_hops=MAX_HOPS,
-    )
-
-    retriever = MultiHopRetriever(
-        base_retriever=base_retriever,
-        planner=planner,
-        max_hops=MAX_HOPS,
-        debug=True,
-    )
-else:
-    retriever = base_retriever
+retriever = MultiHopRetriever(
+    base_retriever=base_retriever,
+    generator=generator,
+    use_multihop=True,  # флаг можно менять здесь
+    max_hops=4,
+    debug=True,
+)
 
 
 # ---------- FastAPI ----------
