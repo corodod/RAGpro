@@ -232,10 +232,10 @@ Candidate pool:
 |---------------------|--------|
 | Dense retrieval     | `intfloat/multilingual-e5-large` |
 | Cross-Encoder       | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
-| Query Rewriting     | Instruct LLM (Qwen / GPT-подобная) |
-| Query2Doc / HyDE    | Instruct LLM |
-| Multi-Hop Planner   | Instruct LLM |
-| Answer Generation   | Instruct LLM |
+| Query Rewriting     | `Qwen/Qwen2.5-3B-Instruct` или `TinyLlama/TinyLlama-1.1B-Chat-v1.0` |
+| Query2Doc / HyDE    | `Qwen/Qwen2.5-3B-Instruct` или `TinyLlama/TinyLlama-1.1B-Chat-v1.0` |
+| Multi-Hop Planner   | `Qwen/Qwen2.5-3B-Instruct` или `TinyLlama/TinyLlama-1.1B-Chat-v1.0` |
+| Answer Generation   | `Qwen/Qwen2.5-3B-Instruct` или `TinyLlama/TinyLlama-1.1B-Chat-v1.0` |
 
 ---
 
