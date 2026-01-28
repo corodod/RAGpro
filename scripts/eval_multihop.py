@@ -20,7 +20,7 @@ from rag.generator import AnswerGenerator, GeneratorConfig
 # ==================================================
 # CONFIG
 # ==================================================
-USE_MULTIHOP = True
+USE_MULTIHOP = False
 MAX_HOPS = 3
 DEVICE = "cuda"
 KS = [1, 3, 5, 10, 20]

@@ -7,7 +7,6 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 
-
 class DenseRetriever:
     def __init__(
         self,
