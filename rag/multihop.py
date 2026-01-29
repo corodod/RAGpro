@@ -1,20 +1,11 @@
 # rag/multihop.py
-
 from typing import List, Dict, Optional
-import numpy as np
 from rag.retriever import Retriever
-from rag.planner import MultiHopPlanner
+from rag.planner import SelfAskPlanner
 from rag.generator import AnswerGenerator
 
+
 class MultiHopRetriever:
-    """
-    Multi-hop retriever with answer-stability based STOP criterion.
-
-    Core idea:
-    - On each hop, probe a candidate answer from accumulated facts
-    - STOP when the answer stabilizes (does not change semantically)
-    """
-
     def __init__(
         self,
         base_retriever: Retriever,
@@ -26,155 +17,117 @@ class MultiHopRetriever:
         self.base_retriever = base_retriever
         self.use_multihop = use_multihop
         self.debug = debug
+        self.llm = generator
 
         if self.use_multihop:
-            self.planner = MultiHopPlanner(llm=generator, max_hops=max_hops)
+            self.planner = SelfAskPlanner(llm=generator, max_hops=max_hops)
             self.max_hops = max_hops
         else:
             self.planner = None
             self.max_hops = 1
 
-        self.llm = generator
-
-    # ------------------------------------------------------------------
-
-    def _extract_facts(self, docs) -> List[str]:
-        """
-        Convert retrieved documents into short factual statements.
-        """
-        facts = []
+    def _dedup_docs_keep_order(self, docs: List[Dict]) -> List[Dict]:
+        seen = set()
+        out = []
         for d in docs:
-            text = d.get("text", "").split(".")[0]
-            title = d.get("title", "")
-            facts.append(f"{title}: {text}")
-        return facts
+            cid = d.get("chunk_id")
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            out.append(d)
+        return out
 
-    # ------------------------------------------------------------------
+    def _extract_notes(self, subquestion: str, docs: List[Dict]) -> List[str]:
+        context = self.llm.build_context(docs, max_chars=2800)
 
-    def retrieve(self, question: str):
-        """
-        Main multi-hop retrieval loop with answer-stability STOP.
-        """
+        system = (
+            "Ты извлекаешь факты из контекста.\n"
+            "Пиши только факты, без рассуждений.\n"
+            "Если релевантных фактов нет — напиши: NONE"
+        )
+        user = f"""
+Под-вопрос:
+{subquestion}
+
+Контекст:
+{context}
+
+Выпиши 3–6 коротких фактов (каждый с новой строки).
+""".strip()
+
+        out = self.llm.generate_chat(system, user, max_new_tokens=140).strip()
+        if not out:
+            return []
+
+        lines = [l.strip("-• \t") for l in out.splitlines() if l.strip()]
+        if not lines or any(l.upper() == "NONE" for l in lines):
+            return []
+
+        return [l[:240] for l in lines[:6]]
+
+    def _normalize(self, s: str) -> str:
+        return " ".join((s or "").strip().lower().split())
+
+    def retrieve(self, question: str) -> List[Dict]:
         if not self.use_multihop:
             return self.base_retriever.retrieve(question)
 
         all_docs: List[Dict] = []
-        all_facts: List[str] = []
-        all_fact_embs: List[np.ndarray] = []
-
+        notes: List[str] = []
         previous_queries: List[str] = []
-        candidate_answers: List[Optional[str]] = []
+
+        # сущности один раз из исходного вопроса
+        entities = []
+        if getattr(self.base_retriever, "entity_extractor", None) is not None:
+            entities = self.base_retriever.entity_extractor.extract(question)
 
         current_query = question
+        final_answer: Optional[str] = None
 
         for hop in range(self.max_hops):
-            # ----------------------------------------------------------
-            # Retrieval
             docs = self.base_retriever.retrieve(current_query)
             all_docs.extend(docs)
+            all_docs = self._dedup_docs_keep_order(all_docs)
 
-            facts = self._extract_facts(docs)
-            all_facts.extend(facts)
+            new_notes = self._extract_notes(current_query, docs)
+            notes.extend(new_notes)
 
-            # ----------------------------------------------------------
-            # Answer probe
-            answer = self._probe_answer(question, all_facts)
-            candidate_answers.append(answer)
-
-            # ----------------------------------------------------------
-            # Answer stability check
-            answer_stable = False
-            if hop > 0:
-                prev_answer = candidate_answers[-2]
-                answer_stable = self._answers_equivalent(prev_answer, answer)
-
-            # ----------------------------------------------------------
-            # Planner
             previous_queries.append(current_query)
 
-            stop_allowed = bool(answer and answer_stable and hop > 0)
-
-            next_query = self.planner.plan_next(
+            plan = self.planner.plan(
                 original_question=question,
                 hop=hop,
                 previous_queries=previous_queries,
-                retrieved_facts=all_facts,
-                signals={
-                    "stop_allowed": stop_allowed,
-                    "answer_stable": answer_stable,
-                },
+                notes=notes,
+                entities=entities,
             )
 
             if self.debug:
-                print(f"[HOP {hop}] answer={answer}")
-                print(f"[HOP {hop}] stable={answer_stable}")
-                print(f"[HOP {hop}] next={next_query}")
+                print(f"[HOP {hop}] query={current_query}")
+                print(f"[HOP {hop}] notes+={len(new_notes)}")
+                print(f"[HOP {hop}] action={plan.get('action')}")
 
-            if next_query == "STOP":
+            if plan["action"] == "final":
+                final_answer = plan.get("answer")
+                break
+
+            if plan["action"] == "stop":
+                break
+
+            next_query = plan["query"]
+
+            # loop guard
+            if self._normalize(next_query) in {self._normalize(q) for q in previous_queries}:
+                if self.debug:
+                    print(f"[HOP {hop}] loop detected, stopping")
                 break
 
             current_query = next_query
 
-        # --------------------------------------------------------------
-        # Final rerank
-        if self.base_retriever.reranker is not None:
+        # финальный rerank под исходный вопрос (важно!)
+        if self.base_retriever.reranker is not None and all_docs:
             docs_copy = [dict(d) for d in all_docs]
             scored = self.base_retriever.reranker.score(question, docs_copy)
-            return sorted(
-                scored,
-                key=lambda x: x.get("ce_score", 0.0),
-                reverse=True,
-            )
+            return sorted(scored, key=lambda x: x.get("ce_score", 0.0), reverse=True)
 
         return all_docs
-
-    # ------------------------------------------------------------------
-
-    def _probe_answer(self, question: str, facts: List[str]) -> Optional[str]:
-        """
-        Lightweight answer probe.
-        Returns a short answer or None if not answerable.
-        """
-        facts_block = "\n".join(f"- {f}" for f in facts[-8:])
-
-        prompt = f"""
-You are given a question and known facts.
-
-Question:
-{question}
-
-Facts:
-{facts_block}
-
-If the answer can be determined, give a SHORT answer (1 sentence max).
-If not enough information, answer: UNKNOWN.
-
-Answer:
-""".strip()
-
-        out = self.llm.generate(prompt, chunks=[]).strip()
-
-        if not out or out.upper().startswith("UNKNOWN"):
-            return None
-
-        return out
-
-    # ------------------------------------------------------------------
-
-    def _answers_equivalent(
-        self,
-        a: Optional[str],
-        b: Optional[str],
-    ) -> bool:
-        """
-        Semantic equivalence check via embeddings.
-        """
-        if not a or not b:
-            return False
-
-        emb_a = self.base_retriever.dense.encode_passage(a)
-        emb_b = self.base_retriever.dense.encode_passage(b)
-
-        sim = float(emb_a @ emb_b)
-
-        return sim >= 0.90

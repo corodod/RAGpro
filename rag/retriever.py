@@ -51,7 +51,7 @@ class RetrieverConfig:
 
     # --- cross-encoder ---
     use_cross_encoder: bool = True
-    ce_strong_threshold: Optional[float] = 3
+    ce_strong_threshold: Optional[float] = None
     ce_top_n: int = 100
 
     # --- entity fallback ---

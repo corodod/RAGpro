@@ -14,13 +14,12 @@ from rag.rewrite import QueryRewriter
 from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
 from rag.multihop import MultiHopRetriever
-from rag.planner import MultiHopPlanner
 from rag.generator import AnswerGenerator, GeneratorConfig
 
 # ==================================================
 # CONFIG
 # ==================================================
-USE_MULTIHOP = False
+USE_MULTIHOP = True
 MAX_HOPS = 3
 DEVICE = "cuda"
 KS = [1, 3, 5, 10, 20]
@@ -67,6 +66,16 @@ def question_len_bucket(q: str) -> str:
     if n <= 8:
         return "medium"
     return "long"
+
+def dedup_keep_order(xs):
+    seen = set()
+    out = []
+    for x in xs:
+        if x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
+
 
 # ==================================================
 # MAIN
@@ -148,6 +157,7 @@ def main():
 
         res = retriever.retrieve(question)
         pred_doc_ids = [doc_id_from_chunk_id(r["chunk_id"]) for r in res]
+        pred_doc_ids = dedup_keep_order(pred_doc_ids)
 
         for k in KS:
             recalls_loose[k].append(recall_at_k_loose(pred_doc_ids, gold, k))

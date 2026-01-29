@@ -1,114 +1,101 @@
 # rag/planner.py
-
 from typing import List, Dict
 import re
 
 
-class MultiHopPlanner:
+class SelfAskPlanner:
     """
-    Planner based on relation-gap reasoning.
-
-    The planner:
-    - Identifies missing relational facts needed to answer the question
-    - Generates a targeted retrieval query for that missing fact
-    - Decides STOP only when the answer is stable and allowed
+    Self-Ask planner:
+      - emits FOLLOWUP or FINAL (single line) or STOP
+      - no JSON, line-based protocol
     """
 
     def __init__(self, llm, max_hops: int = 4):
         self.llm = llm
         self.max_hops = max_hops
 
-    # ------------------------------------------------------------------
-
     def _build_prompt(
         self,
         original_question: str,
         hop: int,
         previous_queries: List[str],
-        retrieved_facts: List[str],
-        signals: Dict,
+        notes: List[str],
+        entities: List[str] | None = None,
     ) -> str:
-        facts_block = "\n".join(f"- {f}" for f in retrieved_facts[-8:])
-        prev_q_block = "\n".join(previous_queries)
+        prev_block = "\n".join(f"- {q}" for q in previous_queries[-6:])
+        notes_block = "\n".join(f"- {n}" for n in notes[-12:])
+        ent_block = ", ".join(entities or [])
 
         return f"""
-You are a reasoning planner for a multi-hop retrieval system.
+Ты решаешь вопрос через Self-Ask (многошаговый поиск по Википедии).
 
-Your goal:
-Identify the SINGLE missing fact required to answer the question.
+Формат вывода — строго ОДНА строка:
+FOLLOWUP: <под-вопрос для поиска>
+или
+FINAL: <короткий финальный ответ>
+или
+STOP
 
-Think in terms of relations:
-<Entity A> --[RELATION]--> <Entity B or VALUE>
+Правила FOLLOWUP:
+- Это поисковый под-вопрос для Википедии, 1 строка.
+- Не повторяй предыдущие запросы (даже частично).
+- Старайся включать ключевые сущности из исходного вопроса.
+- Не отвечай на исходный вопрос в FOLLOWUP.
 
-You must:
-- Identify what relation is missing
-- Formulate a search query to retrieve that fact
+Правила FINAL:
+- FINAL давай только если по NOTES можно уверенно ответить.
+- Ответ короткий (1–2 предложения), без рассуждений.
 
-Rules:
-- Do NOT answer the question
-- Do NOT explain reasoning
-- Do NOT rephrase previous queries
-- Generate ONE precise factual query
-
-STOP is allowed ONLY if:
-- The system explicitly allows STOP
-- The answer is already stable
-
-Original question:
+Исходный вопрос:
 {original_question}
 
-Hop number:
-{hop}
+Hop: {hop}
 
-Previous queries:
-{prev_q_block or "—"}
+Ключевые сущности:
+{ent_block or "—"}
 
-Known facts:
-{facts_block or "—"}
+Предыдущие запросы:
+{prev_block or "—"}
 
-Signals:
-- Answer stable: {"YES" if signals.get("answer_stable") else "NO"}
-- STOP allowed: {"YES" if signals.get("stop_allowed") else "NO"}
-
-Output format:
-MISSING_FACT: <Entity A> | <RELATION> | <Entity B or ?>
-NEXT_QUERY: <query>
-
-or
-
-STOP
+NOTES (из документов):
+{notes_block or "—"}
 """.strip()
 
-    # ------------------------------------------------------------------
-
-    def plan_next(
+    def plan(
         self,
         original_question: str,
         hop: int,
         previous_queries: List[str],
-        retrieved_facts: List[str],
-        signals: Dict,
-    ) -> str:
+        notes: List[str],
+        entities: List[str] | None = None,
+    ) -> Dict:
         if hop >= self.max_hops:
-            return "STOP"
+            return {"action": "stop"}
 
-        prompt = self._build_prompt(
-            original_question=original_question,
-            hop=hop,
-            previous_queries=previous_queries,
-            retrieved_facts=retrieved_facts,
-            signals=signals,
-        )
+        prompt = self._build_prompt(original_question, hop, previous_queries, notes, entities)
 
-        response = self.llm.generate(prompt, chunks=[]).strip()
+        resp = self.llm.generate_chat(
+            system="Ты планировщик Self-Ask для поиска по Википедии.",
+            user=prompt,
+            max_new_tokens=80,
+        ).strip()
 
-        # ---------------- STOP ----------------
-        if response.upper().startswith("STOP"):
-            return "STOP"
+        if not resp:
+            return {"action": "stop"}
 
-        # ---------------- NEXT_QUERY ----------------
-        match = re.search(r"NEXT_QUERY:\s*(.+)", response, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
+        line = resp.splitlines()[0].strip()
 
-        return "STOP"
+        if line.upper().startswith("STOP"):
+            return {"action": "stop"}
+
+        m = re.match(r"(?i)FOLLOWUP:\s*(.+)", line)
+        if m:
+            q = m.group(1).strip()
+            return {"action": "followup", "query": q} if q else {"action": "stop"}
+
+        m = re.match(r"(?i)FINAL:\s*(.+)", line)
+        if m:
+            ans = m.group(1).strip()
+            return {"action": "final", "answer": ans} if ans else {"action": "stop"}
+
+        return {"action": "stop"}

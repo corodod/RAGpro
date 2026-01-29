@@ -163,3 +163,50 @@ class AnswerGenerator:
         answer = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
 
         return answer.strip().split("\n\n")[0]
+
+    def generate_chat(self, system: str, user: str, *, max_new_tokens: int | None = None) -> str:
+        max_new = max_new_tokens or self.cfg.max_new_tokens
+
+        if self.scenario == "tinyllama":
+            # Tinyllama не chat-template → просто склеим
+            prompt = f"{system}\n\n{user}\n\nОтвет:"
+            out = self.pipe(
+                prompt,
+                max_new_tokens=max_new,
+                do_sample=False,
+                temperature=0.0,
+                return_full_text=False,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )[0]["generated_text"]
+            return out.strip()
+
+        # Qwen chat-template
+        messages = [
+            {"role": "system", "content": system.strip()},
+            {"role": "user", "content": user.strip()},
+        ]
+        prompt = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=4096,
+        ).to(self.device)
+
+        with torch.inference_mode():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new,
+                do_sample=False,
+                repetition_penalty=self.cfg.repetition_penalty,
+                eos_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
+
+        gen_ids = output[0][inputs["input_ids"].shape[-1]:]
+        txt = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
+        return txt.strip()
