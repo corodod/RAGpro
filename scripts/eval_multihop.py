@@ -136,6 +136,7 @@ def main():
             generator=generator,
             max_hops=MAX_HOPS,
             debug=True,
+            eval_retrieval=True,
         )
     else:
         retriever = base_retriever

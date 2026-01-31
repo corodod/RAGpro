@@ -22,21 +22,21 @@ class GeneratorConfig:
 
 # ================= GENERATOR =================
 class AnswerGenerator:
-    def __init__(self, cfg: Optional[GeneratorConfig] = None):
+    def __init__(self, cfg: Optional[GeneratorConfig] = None, model_name: Optional[str] = None):
         self.cfg = cfg or GeneratorConfig(backend="cpu")
 
         # -------- CUDA → QWEN --------
         if self.cfg.backend == "cuda" and torch.cuda.is_available():
             self.scenario = "qwen"
             self.device = torch.device("cuda")
-            self.model_name = "Qwen/Qwen2.5-3B-Instruct"
+            self.model_name = model_name or "Qwen/Qwen2.5-3B-Instruct"
             self.dtype = torch.float16
 
         # -------- CPU / MAC → TINYLLAMA --------
         else:
             self.scenario = "tinyllama"
             self.device = torch.device("cpu")
-            self.model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            self.model_name = model_name or "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
             self.dtype = torch.float32
 
             # 🔴 КРИТИЧНО ДЛЯ MAC (segfault fix)
@@ -198,10 +198,13 @@ class AnswerGenerator:
         ).to(self.device)
 
         with torch.inference_mode():
+            do_sample = bool(self.cfg.temperature and self.cfg.temperature > 0.0)
+
             output = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new,
-                do_sample=False,
+                do_sample=do_sample,
+                temperature=self.cfg.temperature if do_sample else None,
                 repetition_penalty=self.cfg.repetition_penalty,
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=self.tokenizer.pad_token_id,

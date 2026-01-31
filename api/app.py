@@ -17,8 +17,7 @@ from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
 from rag.generator import AnswerGenerator, GeneratorConfig
 from rag.retriever import Retriever, RetrieverConfig
-from rag.multihop import MultiHopRetriever
-from rag.planner import MultiHopPlanner
+from rag.agent_executor import PlanExecutorRetriever, ExecutorConfig
 
 # ================= PATHS =================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -58,11 +57,18 @@ generator = AnswerGenerator(
         max_new_tokens=80,
     )
 )
-retriever = MultiHopRetriever(
+retriever = PlanExecutorRetriever(
     base_retriever=base_retriever,
     generator=generator,
-    use_multihop=True,  # флаг можно менять здесь
-    max_hops=4,
+    reranker=base_retriever.reranker,  # <-- используем твой CrossEncoderReranker
+    cfg=ExecutorConfig(
+        max_steps=8,
+        default_top_k=20,
+        max_fanout=15,
+        ce_threshold=0.30,
+        top_per_entity=2,
+        max_evidence=6,
+    ),
     debug=True,
 )
 
@@ -92,12 +98,11 @@ def search(req: SearchRequest):
     print("\n================ RETRIEVAL =================")
     print(f"Question: {req.question}")
 
-    # 1️⃣ retrieve
+    # 1️⃣ retrieve (ONE TIME)
     candidates = retriever.retrieve(req.question)
 
     print(f"Retrieved {len(candidates)} chunks")
 
-    # логируем первые N
     for i, c in enumerate(candidates[:GEN_TOP_K], start=1):
         print(f"\n--- TOP {i} ---")
         print(f"chunk_id: {c.get('chunk_id')}")
@@ -106,11 +111,12 @@ def search(req: SearchRequest):
 
     print("\n================ GENERATION =================")
 
-    # 2️⃣ берем TOP-K для генерации
-    top_chunks = candidates[:GEN_TOP_K]
-
-    # 3️⃣ generate answer
-    answer = generator.generate(req.question, top_chunks)
+    # answer: берем плановый, если он есть; иначе fallback на обычную генерацию по top-k
+    # после retrieve:
+    answer = retriever.last_answer
+    if not answer:
+        top_chunks = candidates[:GEN_TOP_K]
+        answer = retriever.llms.synthesizer.generate(req.question, top_chunks)
 
     print("\n================ ANSWER =================")
     print(answer)
