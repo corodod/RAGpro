@@ -139,6 +139,71 @@ class PlanExecutorRetriever:
 
         return out
 
+    def _clamp(self, v, lo, hi, default):
+        try:
+            v = float(v)
+        except Exception:
+            return default
+        v = max(lo, min(hi, v))
+        return int(v) if isinstance(default, int) else v
+
+    def _guard_step(self, s, state: Dict[str, Any]) -> bool:
+        """
+        1) Клэмпим опасные числа (top_k/max_fanout/max_entities/max_evidence/etc)
+        2) Проверяем зависимости на наличие ключей в state
+        """
+        # ---- clamp ----
+        if s.op == "retrieve":
+            s.args["top_k"] = self._clamp(
+                s.args.get("top_k"), 1, 50, self.cfg.default_top_k
+            )
+
+        elif s.op == "map_retrieve":
+            s.args["top_k"] = self._clamp(s.args.get("top_k"), 1, 30, 15)
+            s.args["max_fanout"] = self._clamp(
+                s.args.get("max_fanout"), 1, 20, self.cfg.max_fanout
+            )
+
+        elif s.op == "extract_entities":
+            s.args["max_entities"] = self._clamp(s.args.get("max_entities"), 1, 30, 20)
+
+        elif s.op == "filter_ce":
+            s.args["threshold"] = float(
+                self._clamp(s.args.get("threshold"), 0.0, 1.0, self.cfg.ce_threshold)
+            )
+            s.args["top_per_entity"] = self._clamp(
+                s.args.get("top_per_entity"), 1, 3, self.cfg.top_per_entity
+            )
+
+        elif s.op == "synthesize":
+            s.args["max_evidence"] = self._clamp(
+                s.args.get("max_evidence"), 1, 10, self.cfg.max_evidence
+            )
+
+        # ---- dependency checks ----
+        dep_keys = []
+
+        if s.op in ("extract_entities", "extract_answer", "synthesize"):
+            dep_keys.append(s.args.get("from"))
+
+        if s.op == "map_retrieve":
+            dep_keys.append(s.args.get("from"))
+
+        if s.op == "filter_ce":
+            dep_keys += [s.args.get("rows_from"), s.args.get("hits_from")]
+
+        if s.op == "compose_query":
+            dep_keys.append(s.args.get("x_from"))
+
+        if s.op == "retrieve":
+            dep_keys.append(s.args.get("query_from"))
+
+        for k in dep_keys:
+            if k and k not in state:
+                return False
+
+        return True
+
     def _op_retrieve(self, *, query: str, top_k: int) -> List[Dict]:
         key = (query, int(top_k))
         if self.cfg.cache_enabled and key in self._cache:
@@ -419,12 +484,20 @@ class PlanExecutorRetriever:
         steps = plan.steps[: self.cfg.max_steps]
 
         for s in steps:
+            s.args = self._normalize_args(s.args or {})
+
+            # guardrails: clamp + проверка зависимостей
+            if not self._guard_step(s, state):
+                if self.debug:
+                    print(f"[Exec] skip step {s.id} op={s.op} out={s.out} args={s.args} (missing deps or unsafe args)")
+                continue
+
             if self.debug:
-                s.args = self._normalize_args(s.args or {})
                 print(f"[Exec] step {s.id} op={s.op} out={s.out} args={s.args}")
 
             if s.op == "retrieve":
-                top_k = int(s.args.get("top_k") or self.cfg.default_top_k)
+                # top_k = int(s.args.get("top_k") or self.cfg.default_top_k)
+                top_k = int(s.args["top_k"])
                 # 1) прямой query или main_query
                 query = s.args.get("query") or s.args.get("main_query")
                 # 2) query_from=<state_key>
