@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from rag.bm25 import BM25Retriever
 from rag.dense import DenseRetriever
 from rag.reranker import CrossEncoderReranker
-from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
 from rag.generator import AnswerGenerator, GeneratorConfig
 from rag.retriever import Retriever, RetrieverConfig
@@ -28,7 +27,7 @@ backend = os.getenv("GEN_BACKEND", "cpu")
 device = "cuda" if backend == "cuda" else "cpu"
 
 GEN_TOP_K = 5
-
+USE_AGENT = False
 # ---------- Build retriever ----------
 bm25 = BM25Retriever.load(INDEX_DIR)
 
@@ -115,29 +114,68 @@ class SearchResponse(BaseModel):
 
 @app.post("/rag", response_model=SearchResponse)
 def search(req: SearchRequest):
-    print("\n================ RETRIEVAL =================")
+    print("\n================ REQUEST =================")
     print(f"Question: {req.question}")
+    print(f"Mode: {'AGENTIC RAG' if USE_AGENT else 'PLAIN RAG'}")
 
-    # 1️⃣ retrieve (ONE TIME)
-    candidates = retriever.retrieve(req.question)
+    # ================= RETRIEVAL =================
+    print("\n================ RETRIEVAL =================")
 
-    print(f"Retrieved {len(candidates)} chunks")
+    if USE_AGENT:
+        print("[Retrieval] Using AGENT executor")
 
+        # 1️⃣ Agentic retrieve
+        candidates = retriever.retrieve(req.question)
+
+        print(f"[Retrieval] Agent returned {len(candidates)} chunks")
+
+        # debug plan
+        if retriever.last_plan:
+            print("\n[Agent] Plan:")
+            for s in retriever.last_plan.steps:
+                print(f"  - {s.id}: {s.op} -> {s.out} | args={s.args}")
+
+        # debug state
+        if retriever.last_state:
+            print("\n[Agent] Final state keys:")
+            for k, v in retriever.last_state.items():
+                if isinstance(v, list):
+                    print(f"  - {k}: list[{len(v)}]")
+                else:
+                    print(f"  - {k}: {type(v).__name__}")
+
+    else:
+        print("[Retrieval] Using BASE retriever (no agent)")
+
+        # 1️⃣ Plain RAG retrieve
+        candidates = base_retriever.retrieve(req.question)
+
+        print(f"[Retrieval] Retrieved {len(candidates)} chunks")
+
+    # ---- print TOP-K chunks ----
     for i, c in enumerate(candidates[:GEN_TOP_K], start=1):
         print(f"\n--- TOP {i} ---")
         print(f"chunk_id: {c.get('chunk_id')}")
         print(f"title: {c.get('title')}")
         print(f"text: {(c.get('text') or '')[:300]}")
 
+    # ================= GENERATION =================
     print("\n================ GENERATION =================")
 
-    # answer: берем плановый, если он есть; иначе fallback на обычную генерацию по top-k
-    # после retrieve:
-    answer = retriever.last_answer
+    answer = None
+
+    if USE_AGENT:
+        answer = retriever.last_answer
+        if answer:
+            print("[Generation] Using answer produced by AGENT")
+        else:
+            print("[Generation] Agent did not produce answer → fallback to generator")
+
     if not answer:
         top_chunks = candidates[:GEN_TOP_K]
-        answer = retriever.llms.synthesizer.generate(req.question, top_chunks)
+        answer = generator.generate(req.question, top_chunks)
 
+    # ================= ANSWER =================
     print("\n================ ANSWER =================")
     print(answer)
     print("=========================================\n")

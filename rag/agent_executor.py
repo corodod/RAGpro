@@ -290,10 +290,23 @@ class PlanExecutorRetriever:
             self._cache[key] = hits
         return hits
 
-    def _op_extract_entities(self, *, from_hits: List[Dict], max_entities: int) -> List[Dict]:
-        ents = _extract_entity_candidates_from_hits(from_hits, limit=max_entities)
-        # rows format
-        return [{"entity": e} for e in ents]
+    def _op_extract_entities(self, *, question: str, from_hits: List[Dict], max_entities: int) -> List[Dict]:
+        # 1) из вопроса
+        ents = self.base_retriever.entity_extractor.extract(question) if self.base_retriever.entity_extractor else []
+        # 2) можно добавить из топ-чанков (опционально)
+        # for h in from_hits[:5]:
+        #     ents += self.base_retriever.entity_extractor.extract(h.get("title","") + " " + h.get("text",""))
+        # дедуп
+        seen = set()
+        out = []
+        for e in ents:
+            k = e.strip().lower()
+            if k and k not in seen:
+                seen.add(k)
+                out.append({"entity": e.strip()})
+            if len(out) >= max_entities:
+                break
+        return out
 
     def _op_map_retrieve(
         self,
