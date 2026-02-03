@@ -1,6 +1,6 @@
 # rag/retriever.py
 from __future__ import annotations
-
+from pathlib import Path
 # =========================
 # HYPERPARAMETERS
 # =========================
@@ -27,6 +27,17 @@ ENTITY_BIAS = 1.2
 # --- dense ranking stages ---
 DENSE_STAGE1_TOP_N = 500
 DENSE_STAGE2_TOP_N = 200
+# --- dense: retriever hyperparams (MOVED HERE from rag/dense.py) ---
+DENSE_MODEL_NAME = "intfloat/multilingual-e5-large"
+DENSE_EMBEDDING_DIM = 1024
+DENSE_QUERY_PREFIX = "query: "
+DENSE_PASSAGE_PREFIX = "passage: "
+DENSE_SEARCH_TOP_K = 10
+DENSE_RERANK_TOP_K = 10
+DENSE_RERANK_RETURN_EMBEDDINGS = True
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
+CHUNKS_PATH = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
 
 # --- final ---
 FINAL_TOP_K = 20
@@ -35,8 +46,7 @@ FINAL_TOP_K = 20
 USE_REWRITES = False
 N_REWRITES = 2
 REWRITE_MIN_COSINE = 0.75
-
-# --- rewrites: models/devices/generation/parsing (NOW CONTROLLED HERE) ---
+# --- rewrites: models/devices/generation/parsing ---
 REWRITE_MIN_LINE_LEN = 10
 REWRITE_LLM_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 REWRITE_EMBEDDER_MODEL_NAME = "intfloat/multilingual-e5-small"
@@ -49,6 +59,11 @@ REWRITE_TEMPERATURE = 0.0
 USE_CROSS_ENCODER = True
 CE_STRONG_THRESHOLD = None  # float | None
 CE_TOP_N = 100
+# --- cross-encoder: reranker hyperparams ---
+CROSS_ENCODER_MODEL_NAME = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+CROSS_ENCODER_DEVICE = "cpu"          # "cpu" | "cuda"
+CROSS_ENCODER_BATCH_SIZE = 32
+CROSS_ENCODER_USE_FP16 = True         # effective only on CUDA
 
 # --- entity fallback / expansion ---
 USE_ENTITY_EXPANSION = True
@@ -56,6 +71,18 @@ ENTITY_BM25_TOP_N = 100
 ENTITY_DENSE_RECALL_TOP_N = 30
 ENTITY_TOP_N_PER_ENTITY = 7
 BASE_TOP_X = 7
+# --- entities: extractor hyperparams (MOVED HERE from rag/entities.py) ---
+ENT_SPACY_MODEL = "ru_core_news_lg"
+ENT_ALLOWED_LABELS = {
+    "PERSON",
+    "ORG",
+    "GPE",
+    "LOC",
+    "EVENT",
+    "WORK_OF_ART",
+}
+ENT_MIN_LEN = 3
+ENT_MAX_TOKENS = 6
 
 # --- coverage ---
 USE_COVERAGE = False
@@ -71,6 +98,14 @@ HYDE_MAX_TOKENS = 120
 HYDE_DENSE_TOP_N = 200
 HYDE_ONLY_IF_NO_ENTITIES = True
 HYDE_MAX_QUERY_LEN = 4
+# --- HyDE: generator hyperparams (MOVED HERE from rag/hyde.py) ---
+HYDE_LLM_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+HYDE_LLM_DEVICE = "cpu"
+HYDE_DO_SAMPLE = False
+HYDE_TEMPERATURE = 0.0
+HYDE_TRUST_REMOTE_CODE = True
+# max tokens for generation (use your existing one as source of truth)
+HYDE_MAX_NEW_TOKENS = HYDE_MAX_TOKENS
 
 # --- Query2Doc ---
 USE_QUERY2DOC = True
@@ -81,6 +116,14 @@ QUERY2DOC_BM25_TOP_N = 300
 QUERY2DOC_DENSE_TOP_N = 200
 QUERY2DOC_ONLY_IF_NO_ENTITIES = True
 QUERY2DOC_MAX_QUERY_LEN = 6
+# --- Query2Doc: generator hyperparams (MOVED HERE from rag/query2doc.py) ---
+QUERY2DOC_LLM_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+QUERY2DOC_LLM_DEVICE = "cpu"
+QUERY2DOC_TEMPERATURE = 0.0
+QUERY2DOC_TRUST_REMOTE_CODE = True
+
+# max tokens for generation (use your existing one as source of truth)
+QUERY2DOC_MAX_NEW_TOKENS = QUERY2DOC_MAX_TOKENS
 
 # =========================
 # IMPORTS
@@ -124,6 +167,15 @@ class RetrieverConfig:
     # --- dense ranking ---
     dense_stage1_top_n: int = DENSE_STAGE1_TOP_N
     dense_stage2_top_n: int = DENSE_STAGE2_TOP_N
+    # --- dense: model & behavior ---
+    dense_model_name: str = DENSE_MODEL_NAME
+    dense_embedding_dim: int = DENSE_EMBEDDING_DIM
+    dense_query_prefix: str = DENSE_QUERY_PREFIX
+    dense_passage_prefix: str = DENSE_PASSAGE_PREFIX
+    dense_search_top_k: int = DENSE_SEARCH_TOP_K
+    dense_rerank_top_k: int = DENSE_RERANK_TOP_K
+    dense_rerank_return_embeddings: bool = DENSE_RERANK_RETURN_EMBEDDINGS
+
 
     # --- final ---
     final_top_k: int = FINAL_TOP_K
@@ -146,6 +198,11 @@ class RetrieverConfig:
     use_cross_encoder: bool = USE_CROSS_ENCODER
     ce_strong_threshold: Optional[float] = CE_STRONG_THRESHOLD
     ce_top_n: int = CE_TOP_N
+    # --- cross-encoder: reranker hyperparams ---
+    cross_encoder_model_name: str = CROSS_ENCODER_MODEL_NAME
+    cross_encoder_device: str = CROSS_ENCODER_DEVICE
+    cross_encoder_batch_size: int = CROSS_ENCODER_BATCH_SIZE
+    cross_encoder_use_fp16: bool = CROSS_ENCODER_USE_FP16
 
     # --- entity fallback ---
     use_entity_expansion: bool = USE_ENTITY_EXPANSION
@@ -153,6 +210,11 @@ class RetrieverConfig:
     entity_dense_recall_top_n: int = ENTITY_DENSE_RECALL_TOP_N
     entity_top_n_per_entity: int = ENTITY_TOP_N_PER_ENTITY
     base_top_x: int = BASE_TOP_X
+    # --- entities ---
+    ent_spacy_model: str = ENT_SPACY_MODEL
+    ent_allowed_labels: Set[str] = None  # set default in __post_init__
+    ent_min_len: int = ENT_MIN_LEN
+    ent_max_tokens: int = ENT_MAX_TOKENS
 
     # --- coverage ---
     use_coverage: bool = USE_COVERAGE
@@ -168,6 +230,13 @@ class RetrieverConfig:
     hyde_dense_top_n: int = HYDE_DENSE_TOP_N
     hyde_only_if_no_entities: bool = HYDE_ONLY_IF_NO_ENTITIES
     hyde_max_query_len: int = HYDE_MAX_QUERY_LEN
+    # --- HyDE: generator hyperparams ---
+    hyde_llm_model_name: str = HYDE_LLM_MODEL_NAME
+    hyde_llm_device: str = HYDE_LLM_DEVICE
+    hyde_max_new_tokens: int = HYDE_MAX_NEW_TOKENS
+    hyde_do_sample: bool = HYDE_DO_SAMPLE
+    hyde_temperature: float = HYDE_TEMPERATURE
+    hyde_trust_remote_code: bool = HYDE_TRUST_REMOTE_CODE
 
     # --- Query2Doc ---
     use_query2doc: bool = USE_QUERY2DOC
@@ -178,7 +247,16 @@ class RetrieverConfig:
     query2doc_dense_top_n: int = QUERY2DOC_DENSE_TOP_N
     query2doc_only_if_no_entities: bool = QUERY2DOC_ONLY_IF_NO_ENTITIES
     query2doc_max_query_len: int = QUERY2DOC_MAX_QUERY_LEN
+    # --- Query2Doc: generator hyperparams ---
+    query2doc_llm_model_name: str = QUERY2DOC_LLM_MODEL_NAME
+    query2doc_llm_device: str = QUERY2DOC_LLM_DEVICE
+    query2doc_max_new_tokens: int = QUERY2DOC_MAX_NEW_TOKENS
+    query2doc_temperature: float = QUERY2DOC_TEMPERATURE
+    query2doc_trust_remote_code: bool = QUERY2DOC_TRUST_REMOTE_CODE
 
+    def __post_init__(self):
+        if self.ent_allowed_labels is None:
+            self.ent_allowed_labels = set(ENT_ALLOWED_LABELS)
 
 # ================= RETRIEVER =================
 class Retriever:
@@ -206,13 +284,29 @@ class Retriever:
         debug: bool = False,
     ):
         self.bm25 = bm25
-        self.dense = dense
-        self.reranker = reranker
-        self.entity_extractor = entity_extractor
         self.coverage_selector = coverage_selector
         self.cfg = config
         self.debug = debug
 
+        self.dense = dense or DenseRetriever(
+            chunks_path=CHUNKS_PATH,
+            index_path=INDEX_DIR / "faiss.index",
+            meta_path=INDEX_DIR / "faiss_meta.json",
+            model_name=self.cfg.dense_model_name,
+            embedding_dim=self.cfg.dense_embedding_dim,
+            query_prefix=self.cfg.dense_query_prefix,
+            passage_prefix=self.cfg.dense_passage_prefix,
+            default_search_top_k=self.cfg.dense_search_top_k,
+            default_rerank_top_k=self.cfg.dense_rerank_top_k,
+            default_return_embeddings=self.cfg.dense_rerank_return_embeddings,
+        )
+        # если reranker не передали — создаём тут из cfg
+        self.reranker = reranker or CrossEncoderReranker(
+            model_name=self.cfg.cross_encoder_model_name,
+            device=self.cfg.cross_encoder_device,
+            batch_size=self.cfg.cross_encoder_batch_size,
+            use_fp16=self.cfg.cross_encoder_use_fp16,
+        )
         # если rewriter не передали — создаём тут из cfg (и все гиперы живут в retriever)
         self.rewriter = rewriter or QueryRewriter(
             llm_model_name=self.cfg.rewrite_llm_model_name,
@@ -231,22 +325,34 @@ class Retriever:
 
         self.hyde = (
             HyDEGenerator(
-                llm_device="cuda" if self.dense.model.device.type == "cuda" else "cpu",
-                max_new_tokens=self.cfg.hyde_max_tokens,
+                llm_model_name=self.cfg.hyde_llm_model_name,
+                llm_device=self.cfg.hyde_llm_device,
+                max_new_tokens=self.cfg.hyde_max_new_tokens,
+                do_sample=self.cfg.hyde_do_sample,
+                temperature=self.cfg.hyde_temperature,
+                trust_remote_code=self.cfg.hyde_trust_remote_code,
             )
             if self.cfg.use_hyde
             else None
         )
-
         self.query2doc = (
             Query2DocGenerator(
-                llm_device="cuda" if self.dense.model.device.type == "cuda" else "cpu",
-                max_new_tokens=self.cfg.query2doc_max_tokens,
+                llm_model_name=self.cfg.query2doc_llm_model_name,
+                llm_device=self.cfg.query2doc_llm_device,
+                max_new_tokens=self.cfg.query2doc_max_new_tokens,
+                temperature=self.cfg.query2doc_temperature,
+                trust_remote_code=self.cfg.query2doc_trust_remote_code,
             )
             if self.cfg.use_query2doc
             else None
         )
-
+        # если entity_extractor не передали — создаём тут из cfg
+        self.entity_extractor = entity_extractor or EntityExtractor(
+            model=self.cfg.ent_spacy_model,
+            allowed_labels=self.cfg.ent_allowed_labels,
+            min_len=self.cfg.ent_min_len,
+            max_tokens=self.cfg.ent_max_tokens,
+        )
     @staticmethod
     def _rrf(rrf_k: int, rank: int) -> float:
         return 1.0 / (rrf_k + rank)

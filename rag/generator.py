@@ -55,14 +55,14 @@ class AnswerGenerator:
         if self.cfg.backend == "cuda" and torch.cuda.is_available():
             self.scenario = "qwen"
             self.device = torch.device("cuda")
-            self.model_name = model_name or "GEN_MODEL_MAX"
+            self.model_name = model_name or GEN_MODEL_MAX
             self.dtype = torch.float16
 
         # -------- CPU / MAC → TINYLLAMA --------
         else:
             self.scenario = "tinyllama"
             self.device = torch.device("cpu")
-            self.model_name = model_name or "GEN_MODEL_MIN"
+            self.model_name = model_name or GEN_MODEL_MIN
             self.dtype = torch.float32
 
             # 🔴 КРИТИЧНО ДЛЯ MAC (segfault fix)
@@ -200,7 +200,7 @@ class AnswerGenerator:
                 prompt,
                 max_new_tokens=max_new,
                 do_sample=False,
-                temperature=GEN_TINYLLAMA_TEMP_FOR_CHAT,
+                temperature=0.0,
                 return_full_text=False,
                 pad_token_id=self.tokenizer.eos_token_id,
             )[0]["generated_text"]
@@ -224,7 +224,7 @@ class AnswerGenerator:
         ).to(self.device)
 
         with torch.inference_mode():
-            do_sample = bool(self.cfg.temperature and self.cfg.temperature > GEN_TINYLLAMA_TEMP_FOR_CHAT)
+            do_sample = bool(self.cfg.temperature and self.cfg.temperature > 0.0)
 
             output = self.model.generate(
                 **inputs,

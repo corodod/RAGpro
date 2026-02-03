@@ -5,9 +5,6 @@ import pickle
 from pathlib import Path
 from typing import List, Dict
 
-BM25_DEFAULT_TOP_K = 10
-# токенизация
-BM25_TOKEN_PATTERN = r"[а-яa-z0-9]+"
 
 class BM25Retriever:
     def __init__(self, bm25, chunk_ids, titles, texts):
@@ -19,7 +16,7 @@ class BM25Retriever:
     @staticmethod
     def tokenize(text: str):
         text = text.lower()
-        return re.findall(BM25_TOKEN_PATTERN, text)
+        return re.findall(r"[а-яa-z0-9]+", text)
 
     @classmethod
     def load(cls, index_dir: Path):
@@ -45,7 +42,7 @@ class BM25Retriever:
             texts=texts,
         )
 
-    def search(self, query: str, top_k: int = BM25_DEFAULT_TOP_K) -> List[Dict]:
+    def search(self, query: str, top_k: int = 10) -> List[Dict]:
         tokenized_query = self.tokenize(query)
         scores = self.bm25.get_scores(tokenized_query)
 

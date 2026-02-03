@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from rag.bm25 import BM25Retriever
 from rag.dense import DenseRetriever
 from rag.reranker import CrossEncoderReranker
-from rag.rewrite import QueryRewriter
 from rag.entities import EntityExtractor
 from rag.coverage import CoverageSelector
 from rag.generator import AnswerGenerator, GeneratorConfig
@@ -33,21 +32,39 @@ GEN_TOP_K = 5
 # ---------- Build retriever ----------
 bm25 = BM25Retriever.load(INDEX_DIR)
 
+cfg = RetrieverConfig()
+
 dense = DenseRetriever(
     chunks_path=CHUNKS_PATH,
     index_path=INDEX_DIR / "faiss.index",
     meta_path=INDEX_DIR / "faiss_meta.json",
+    model_name=cfg.dense_model_name,
+    embedding_dim=cfg.dense_embedding_dim,
+    query_prefix=cfg.dense_query_prefix,
+    passage_prefix=cfg.dense_passage_prefix,
+    default_search_top_k=cfg.dense_search_top_k,
+    default_rerank_top_k=cfg.dense_rerank_top_k,
+    default_return_embeddings=cfg.dense_rerank_return_embeddings,
 )
 dense.load()
 
 base_retriever = Retriever(
     bm25=bm25,
     dense=dense,
-    reranker=CrossEncoderReranker(device=device),
+    reranker=CrossEncoderReranker(
+        model_name=cfg.cross_encoder_model_name,
+        device=device,  # или cfg.cross_encoder_device, но ты хочешь cpu/cuda динамически
+        batch_size=cfg.cross_encoder_batch_size,
+        use_fp16=cfg.cross_encoder_use_fp16,
+    ),
     rewriter=None,
-    entity_extractor=EntityExtractor(),
-    coverage_selector=CoverageSelector(),
-    config=RetrieverConfig(),
+    entity_extractor=None,
+    coverage_selector = CoverageSelector(
+                epsilon=cfg.coverage_epsilon,
+                max_chunks=cfg.coverage_max_chunks,
+                alpha=cfg.coverage_alpha,
+            ),
+    config=cfg,
     debug=True,
 )
 
@@ -55,12 +72,15 @@ generator = AnswerGenerator(
     GeneratorConfig(
         backend=backend,
         max_new_tokens=80,
-    )
+
+    ),
+    # model_name="Qwen/Qwen2.5-1.5B-Instruct",  # если у тебя есть такое поле
 )
+
 retriever = PlanExecutorRetriever(
     base_retriever=base_retriever,
     generator=generator,
-    reranker=base_retriever.reranker,  # <-- используем твой CrossEncoderReranker
+    reranker=base_retriever.reranker,
     cfg=ExecutorConfig(
         max_steps=8,
         default_top_k=20,

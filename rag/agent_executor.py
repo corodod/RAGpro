@@ -12,19 +12,92 @@ from rag.plan_schema import Plan
 from rag.line_planner import LinePlanner
 from rag.llm_bundle import LLMBundle
 
+# --- agent executor ---
+AGENT_ENABLED = True
+
+AGENT_MAX_STEPS = 8
+AGENT_DEFAULT_TOP_K = 20
+AGENT_MAX_FANOUT = 15
+AGENT_CACHE_ENABLED = True
+
+AGENT_CE_THRESHOLD = 0.30
+AGENT_TOP_PER_ENTITY = 2
+
+AGENT_MAX_EVIDENCE = 6
+
+# clamp guardrails
+AGENT_RETRIEVE_TOPK_MIN = 1
+AGENT_RETRIEVE_TOPK_MAX = 50
+
+AGENT_MAP_TOPK_MIN = 1
+AGENT_MAP_TOPK_MAX = 30
+AGENT_MAP_FANOUT_MIN = 1
+AGENT_MAP_FANOUT_MAX = 20
+
+AGENT_ENTITIES_MIN = 1
+AGENT_ENTITIES_MAX = 30
+AGENT_ENTITIES_DEFAULT = 20
+
+AGENT_CE_TOP_PER_ENTITY_MIN = 1
+AGENT_CE_TOP_PER_ENTITY_MAX = 3
+
+AGENT_EVIDENCE_MIN = 1
+AGENT_EVIDENCE_MAX = 10
+
+# generation/context sizes
+AGENT_EXTRACT_ANSWER_HITS_TOP = 6
+AGENT_EXTRACT_ANSWER_CTX_CHARS = 2600
+AGENT_EXTRACT_ANSWER_MAX_NEW_TOKENS = 120
+
+AGENT_SYNTH_HITS_CTX_CHARS = 3200
+AGENT_SYNTH_HITS_MAX_NEW_TOKENS = 180
+
+AGENT_EVIDENCE_TEXT_MAX_CHARS = 800
+AGENT_SYNTH_EVIDENCE_MAX_NEW_TOKENS = 160
+
 @dataclass
 class ExecutorConfig:
-    max_steps: int = 8
-    default_top_k: int = 20
-    max_fanout: int = 15
-    cache_enabled: bool = True
+    agent_enabled: bool = AGENT_ENABLED
 
-    # CE filtering defaults (planner can override per plan)
-    ce_threshold: float = 0.30
-    top_per_entity: int = 2
+    max_steps: int = AGENT_MAX_STEPS
+    default_top_k: int = AGENT_DEFAULT_TOP_K
+    max_fanout: int = AGENT_MAX_FANOUT
+    cache_enabled: bool = AGENT_CACHE_ENABLED
 
-    # synthesis
-    max_evidence: int = 6
+    ce_threshold: float = AGENT_CE_THRESHOLD
+    top_per_entity: int = AGENT_TOP_PER_ENTITY
+
+    max_evidence: int = AGENT_MAX_EVIDENCE
+
+    # guardrails
+    retrieve_topk_min: int = AGENT_RETRIEVE_TOPK_MIN
+    retrieve_topk_max: int = AGENT_RETRIEVE_TOPK_MAX
+
+    map_topk_min: int = AGENT_MAP_TOPK_MIN
+    map_topk_max: int = AGENT_MAP_TOPK_MAX
+    map_fanout_min: int = AGENT_MAP_FANOUT_MIN
+    map_fanout_max: int = AGENT_MAP_FANOUT_MAX
+
+    entities_min: int = AGENT_ENTITIES_MIN
+    entities_max: int = AGENT_ENTITIES_MAX
+    entities_default: int = AGENT_ENTITIES_DEFAULT
+
+    ce_top_per_entity_min: int = AGENT_CE_TOP_PER_ENTITY_MIN
+    ce_top_per_entity_max: int = AGENT_CE_TOP_PER_ENTITY_MAX
+
+    evidence_min: int = AGENT_EVIDENCE_MIN
+    evidence_max: int = AGENT_EVIDENCE_MAX
+
+    # generation/context
+    extract_answer_hits_top: int = AGENT_EXTRACT_ANSWER_HITS_TOP
+    extract_answer_ctx_chars: int = AGENT_EXTRACT_ANSWER_CTX_CHARS
+    extract_answer_max_new_tokens: int = AGENT_EXTRACT_ANSWER_MAX_NEW_TOKENS
+
+    synth_hits_ctx_chars: int = AGENT_SYNTH_HITS_CTX_CHARS
+    synth_hits_max_new_tokens: int = AGENT_SYNTH_HITS_MAX_NEW_TOKENS
+
+    evidence_text_max_chars: int = AGENT_EVIDENCE_TEXT_MAX_CHARS
+    synth_evidence_max_new_tokens: int = AGENT_SYNTH_EVIDENCE_MAX_NEW_TOKENS
 
 
 def _dedup_hits_keep_order(hits: List[Dict]) -> List[Dict]:
@@ -345,7 +418,10 @@ class PlanExecutorRetriever:
 
     def _op_extract_answer(self, *, question: str, hits: List[Dict]) -> Dict[str, Any]:
         # возьмём небольшой контекст: top-6
-        ctx = self.llms.synthesizer.build_context(hits[:6], max_chars=2600)
+        ctx = self.llms.synthesizer.build_context(
+            hits[: self.cfg.extract_answer_hits_top],
+            max_chars=self.cfg.extract_answer_ctx_chars,
+        )
 
         system = (
             "Ты извлекаешь КОРОТКИЙ ответ (одну сущность/фразу) строго из контекста.\n"
@@ -355,7 +431,7 @@ class PlanExecutorRetriever:
             '{"value": null, "chunk_id": null}'
         )
         user = f"Вопрос:\n{question}\n\nКонтекст:\n{ctx}\n\nJSON:"
-        txt = self.llms.extractor.generate_chat(system=system, user=user, max_new_tokens=120).strip()
+        txt = self.llms.extractor.generate_chat(system=system, user=user,  max_new_tokens=self.cfg.extract_answer_max_new_tokens).strip()
 
         # грубый парсинг json
         import json as _json
@@ -417,7 +493,7 @@ class PlanExecutorRetriever:
         # Case A: это обычные hits (нет поля "entity")
         # -----------------------------
         if ev and "entity" not in ev[0]:
-            context = self.llms.synthesizer.build_context(ev, max_chars=3200)
+            context = self.llms.synthesizer.build_context(ev, max_chars=self.cfg.synth_hits_ctx_chars)
 
             system = (
                 "Отвечай строго по контексту.\n"
@@ -432,7 +508,7 @@ class PlanExecutorRetriever:
                 "Ответ:"
             )
 
-            return self.llms.synthesizer.generate_chat(system=system, user=user, max_new_tokens=180).strip()
+            return self.llms.synthesizer.generate_chat(system=system, user=user, max_new_tokens=self.cfg.synth_hits_max_new_tokens).strip()
 
         # -----------------------------
         # Case B: это evidence-rows (есть entity, chunk_id, text, ce_score)
