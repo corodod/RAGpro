@@ -3,14 +3,22 @@ from typing import List, Dict
 import torch
 from sentence_transformers import CrossEncoder
 
+# =========================
+# HYPERPARAMETERS
+# =========================
+
+CROSS_ENCODER_MODEL_NAME = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+CROSS_ENCODER_DEVICE = "cpu"          # "cpu" | "cuda"
+CROSS_ENCODER_BATCH_SIZE = 32
+CROSS_ENCODER_USE_FP16 = True         # effective only on CUDA
 
 class CrossEncoderReranker:
     def __init__(
         self,
-        model_name: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
-        device: str = "cpu",
-        batch_size: int = 32,
-        use_fp16: bool = True,
+        model_name: str = CROSS_ENCODER_MODEL_NAME,
+        device: str = CROSS_ENCODER_DEVICE,
+        batch_size: int = CROSS_ENCODER_BATCH_SIZE,
+        use_fp16: bool = CROSS_ENCODER_USE_FP16,
     ):
         self.device = device
         self.batch_size = batch_size

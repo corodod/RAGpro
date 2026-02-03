@@ -2,6 +2,15 @@
 from __future__ import annotations
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+# =========================
+# HYPERPARAMETERS
+# =========================
+
+QUERY2DOC_LLM_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+QUERY2DOC_LLM_DEVICE = "cpu"
+QUERY2DOC_MAX_NEW_TOKENS = 128
+QUERY2DOC_TEMPERATURE = 0.0
+QUERY2DOC_TRUST_REMOTE_CODE = True
 
 
 class Query2DocGenerator:
@@ -23,19 +32,19 @@ class Query2DocGenerator:
     def __init__(
         self,
         *,
-        llm_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
-        llm_device: str = "cpu",
-        max_new_tokens: int = 128,
+        llm_model_name: str = QUERY2DOC_LLM_MODEL_NAME,
+        llm_device: str = QUERY2DOC_LLM_DEVICE,
+        max_new_tokens: int = QUERY2DOC_MAX_NEW_TOKENS,
     ):
         self.max_new_tokens = max_new_tokens
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             llm_model_name,
-            trust_remote_code=True,
+            trust_remote_code=QUERY2DOC_TRUST_REMOTE_CODE,
         )
         self.model = AutoModelForCausalLM.from_pretrained(
             llm_model_name,
-            trust_remote_code=True,
+            trust_remote_code=QUERY2DOC_TRUST_REMOTE_CODE,
         )
 
         self.pipe = pipeline(
@@ -92,7 +101,7 @@ class Query2DocGenerator:
             prompt,
             max_new_tokens=self.max_new_tokens,
             do_sample=False,
-            temperature=0.0,
+            temperature=QUERY2DOC_TEMPERATURE,
             return_full_text=False,
             pad_token_id=self.tokenizer.eos_token_id,
         )[0]["generated_text"]

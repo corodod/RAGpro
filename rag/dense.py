@@ -7,6 +7,34 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 
+# =========================
+# HYPERPARAMETERS
+# =========================
+
+# default embedding model for SentenceTransformer
+DENSE_MODEL_NAME = "intfloat/multilingual-e5-large"
+
+# expected embedding dimension (kept for validation/clarity; not required by FAISS read_index)
+DENSE_EMBEDDING_DIM = 1024
+
+# prompt prefixes for E5-style models
+DENSE_QUERY_PREFIX = "query: "
+DENSE_PASSAGE_PREFIX = "passage: "
+
+# numeric stability for normalization
+DENSE_NORM_EPS = 1e-12
+
+# default search params
+DENSE_SEARCH_TOP_K = 10
+DENSE_RERANK_TOP_K = 10
+DENSE_RERANK_RETURN_EMBEDDINGS = True
+
+# dtype choices
+DENSE_EMB_DTYPE = "float32"
+
+# embedding key name used by downstream modules (e.g., CoverageSelector)
+DENSE_EMB_KEY = "dense_emb"
+
 class DenseRetriever:
     def __init__(
         self,
@@ -14,7 +42,7 @@ class DenseRetriever:
         index_path: Path,
         meta_path: Path,
         model_name: str = "intfloat/multilingual-e5-large",
-        embedding_dim: int = 1024,
+        embedding_dim: int = DENSE_EMBEDDING_DIM,
     ):
         self.chunks_path = chunks_path
         self.index_path = index_path
@@ -32,11 +60,11 @@ class DenseRetriever:
 
     @staticmethod
     def _normalize_2d(x: np.ndarray) -> np.ndarray:
-        return x / (np.linalg.norm(x, axis=1, keepdims=True) + 1e-12)
+        return x / (np.linalg.norm(x, axis=1, keepdims=True) + DENSE_NORM_EPS)
 
     @staticmethod
     def _normalize_1d(v: np.ndarray) -> np.ndarray:
-        return v / (np.linalg.norm(v) + 1e-12)
+        return v / (np.linalg.norm(v) + DENSE_NORM_EPS)
 
     def load(self):
         self.index = faiss.read_index(str(self.index_path))
@@ -58,7 +86,7 @@ class DenseRetriever:
         Returns normalized query embedding (1D float32).
         Compatible with CoverageSelector.
         """
-        q = f"query: {query}"
+        q = DENSE_QUERY_PREFIX + query
         qv = self.model.encode([q], convert_to_numpy=True).astype("float32")
         qv = self._normalize_2d(qv)
         return qv[0]  # 1D
@@ -81,7 +109,7 @@ class DenseRetriever:
     # Retrieval
     # -----------------------------
 
-    def search(self, query: str, top_k: int = 10) -> List[Dict]:
+    def search(self, query: str, top_k: int = DENSE_SEARCH_TOP_K) -> List[Dict]:
         if self.index is None:
             raise RuntimeError("DenseRetriever index is not loaded. Call dense.load().")
 
@@ -108,8 +136,8 @@ class DenseRetriever:
         self,
         query: str,
         candidate_chunk_ids: List[str],
-        top_k: int = 10,
-        return_embeddings: bool = True,
+        top_k: int = DENSE_RERANK_TOP_K,
+        return_embeddings: bool = DENSE_RERANK_RETURN_EMBEDDINGS,
     ) -> List[Dict]:
         """
         Rerank given candidate chunk_ids by cosine similarity with query.
@@ -158,7 +186,7 @@ class DenseRetriever:
         Encode arbitrary document-like text (HyDE passage).
         Returns normalized 1D embedding.
         """
-        p = f"passage: {text}"
+        p = DENSE_PASSAGE_PREFIX + text
         v = self.model.encode([p], convert_to_numpy=True).astype("float32")
         v = self._normalize_2d(v)
         return v[0]

@@ -10,14 +10,40 @@ from transformers import (
     pipeline,
 )
 
+# =========================
+# HYPERPARAMETERS
+# =========================
 
+# backends / scenarios
+
+# model names
+GEN_MODEL_MAX = "Qwen/Qwen2.5-3B-Instruct"
+GEN_MODEL_MIN = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+
+# default generation params
+GEN_MAX_NEW_TOKENS = 120
+GEN_TEMPERATURE = 0.7
+GEN_REPETITION_PENALTY = 1.12
+
+# tokenizer/model input limits
+GEN_MAX_LENGTH = 4096  # tokenizer truncation max_length
+
+# context building
+GEN_CONTEXT_MAX_CHARS_DEFAULT = 4000
+
+# tinyllama pipeline defaults
+GEN_PIPELINE_TASK = "text-generation"
+GEN_PIPELINE_DEVICE_CPU = -1
+
+# Mac/CPU stability
+GEN_CPU_NUM_THREADS = 1  # segfault fix on some mac setups
 # ================= CONFIG =================
 @dataclass
 class GeneratorConfig:
     backend: str  # "cuda" | "cpu"
-    max_new_tokens: int = 120
-    temperature: float = 0.7
-    repetition_penalty: float = 1.12
+    max_new_tokens: int = GEN_MAX_NEW_TOKENS
+    temperature: float = GEN_TEMPERATURE
+    repetition_penalty: float = GEN_REPETITION_PENALTY
 
 
 # ================= GENERATOR =================
@@ -29,14 +55,14 @@ class AnswerGenerator:
         if self.cfg.backend == "cuda" and torch.cuda.is_available():
             self.scenario = "qwen"
             self.device = torch.device("cuda")
-            self.model_name = model_name or "Qwen/Qwen2.5-3B-Instruct"
+            self.model_name = model_name or "GEN_MODEL_MAX"
             self.dtype = torch.float16
 
         # -------- CPU / MAC → TINYLLAMA --------
         else:
             self.scenario = "tinyllama"
             self.device = torch.device("cpu")
-            self.model_name = model_name or "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            self.model_name = model_name or "GEN_MODEL_MIN"
             self.dtype = torch.float32
 
             # 🔴 КРИТИЧНО ДЛЯ MAC (segfault fix)
@@ -59,7 +85,7 @@ class AnswerGenerator:
         # -------- PIPELINE ТОЛЬКО ДЛЯ TINYLLAMA --------
         if self.scenario == "tinyllama":
             self.pipe = pipeline(
-                "text-generation",
+                GEN_PIPELINE_TASK,
                 model=self.model,
                 tokenizer=self.tokenizer,
                 device=-1,  # CPU only
@@ -72,7 +98,7 @@ class AnswerGenerator:
 
     # ================= CONTEXT =================
     @staticmethod
-    def build_context(chunks: List[Dict], max_chars: int = 4000) -> str:
+    def build_context(chunks: List[Dict], max_chars: int = GEN_CONTEXT_MAX_CHARS_DEFAULT) -> str:
         parts, total = [], 0
         for i, c in enumerate(chunks, start=1):
             text = (c.get("text") or "").strip()
@@ -146,7 +172,7 @@ class AnswerGenerator:
             prompt,
             return_tensors="pt",
             truncation=True,
-            max_length=4096,
+            max_length=GEN_MAX_LENGTH,
         ).to(self.device)
 
         with torch.inference_mode():
@@ -174,7 +200,7 @@ class AnswerGenerator:
                 prompt,
                 max_new_tokens=max_new,
                 do_sample=False,
-                temperature=0.0,
+                temperature=GEN_TINYLLAMA_TEMP_FOR_CHAT,
                 return_full_text=False,
                 pad_token_id=self.tokenizer.eos_token_id,
             )[0]["generated_text"]
@@ -194,11 +220,11 @@ class AnswerGenerator:
             prompt,
             return_tensors="pt",
             truncation=True,
-            max_length=4096,
+            max_length=GEN_MAX_LENGTH,
         ).to(self.device)
 
         with torch.inference_mode():
-            do_sample = bool(self.cfg.temperature and self.cfg.temperature > 0.0)
+            do_sample = bool(self.cfg.temperature and self.cfg.temperature > GEN_TINYLLAMA_TEMP_FOR_CHAT)
 
             output = self.model.generate(
                 **inputs,

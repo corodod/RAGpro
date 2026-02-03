@@ -4,7 +4,33 @@ from __future__ import annotations
 from typing import List, Set
 import spacy
 import re
+# =========================
+# HYPERPARAMETERS
+# =========================
 
+# spaCy model name
+ENT_SPACY_MODEL = "ru_core_news_lg"
+
+# which NER labels we consider as "retrieval-useful"
+ENT_ALLOWED_LABELS = {
+    "PERSON",
+    "ORG",
+    "GPE",
+    "LOC",
+    "EVENT",
+    "WORK_OF_ART",
+}
+
+# basic filters
+ENT_MIN_LEN = 3
+ENT_MAX_TOKENS = 6
+
+# regexes
+ENT_ABBREV_RE = r"\b[А-ЯЁ]{2,6}\b"  # abbreviations like РФ, СССР
+ENT_CAPS_MULTIWORD_RE = r"(?:[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)+)"  # Иван Иванович, Красная Площадь
+
+# dependency labels we consider "bad" heads for retrieval entities
+ENT_BAD_HEAD_DEPS = {"obl", "obj"}
 
 class EntityExtractor:
     """
@@ -17,14 +43,14 @@ class EntityExtractor:
 
     def __init__(
         self,
-        model: str = "ru_core_news_lg",
+        model: str = ENT_SPACY_MODEL,
         allowed_labels: Set[str] | None = None,
-        min_len: int = 3,
-        max_tokens: int = 6,
+        min_len: int = ENT_MIN_LEN,
+        max_tokens: int = ENT_MAX_TOKENS,
     ):
         self.nlp = spacy.load(model)
 
-        self.allowed_labels = allowed_labels or {
+        self.allowed_labels = ENT_ALLOWED_LABELS or {
             "PERSON",
             "ORG",
             "GPE",
@@ -35,7 +61,7 @@ class EntityExtractor:
 
         self.min_len = min_len
         self.max_tokens = max_tokens
-        self.abbrev_re = re.compile(r"\b[А-ЯЁ]{2,6}\b")
+        self.abbrev_re = re.compile(ENT_ABBREV_RE)
 
     # --------------------------------------------------
 
@@ -52,7 +78,7 @@ class EntityExtractor:
         head = span[-1]
 
         # dependency-based filtering
-        if head.dep_ in {"obl", "obj"}:
+        if head.dep_ in ENT_BAD_HEAD_DEPS:
             return False
 
         # single noun → only if PROPN
@@ -132,7 +158,7 @@ class EntityExtractor:
         # 3️⃣ Capitalized multi-word spans
         # ==================================================
         caps = re.findall(
-            r"(?:[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)+)",
+            ENT_CAPS_MULTIWORD_RE,
             text,
         )
         for c in caps:

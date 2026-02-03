@@ -1,7 +1,6 @@
 # rag/llm_bundle.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional
 
 from rag.generator import AnswerGenerator
 

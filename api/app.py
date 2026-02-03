@@ -44,7 +44,7 @@ base_retriever = Retriever(
     bm25=bm25,
     dense=dense,
     reranker=CrossEncoderReranker(device=device),
-    rewriter=QueryRewriter(llm_device=device),
+    rewriter=None,
     entity_extractor=EntityExtractor(),
     coverage_selector=CoverageSelector(),
     config=RetrieverConfig(),

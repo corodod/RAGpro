@@ -2,7 +2,17 @@
 from __future__ import annotations
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+# =========================
+# HYPERPARAMETERS
+# =========================
 
+HYDE_LLM_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+HYDE_LLM_DEVICE = "cpu"
+
+HYDE_MAX_NEW_TOKENS = 120
+HYDE_DO_SAMPLE = False
+HYDE_TEMPERATURE = 0.0
+HYDE_TRUST_REMOTE_CODE = True
 
 class HyDEGenerator:
     """
@@ -17,19 +27,19 @@ class HyDEGenerator:
     def __init__(
         self,
         *,
-        llm_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
-        llm_device: str = "cpu",
-        max_new_tokens: int = 120,
+        llm_model_name: str = HYDE_LLM_MODEL_NAME,
+        llm_device: str = HYDE_LLM_DEVICE,
+        max_new_tokens: int = HYDE_MAX_NEW_TOKENS,
     ):
         self.max_new_tokens = max_new_tokens
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             llm_model_name,
-            trust_remote_code=True,
+            trust_remote_code=HYDE_TRUST_REMOTE_CODE,
         )
         self.model = AutoModelForCausalLM.from_pretrained(
             llm_model_name,
-            trust_remote_code=True,
+            trust_remote_code=HYDE_TRUST_REMOTE_CODE,
         )
 
         self.pipe = pipeline(
@@ -70,8 +80,8 @@ class HyDEGenerator:
         out = self.pipe(
             prompt,
             max_new_tokens=self.max_new_tokens,
-            do_sample=False,
-            temperature=0.0,
+            do_sample=HYDE_DO_SAMPLE,
+            temperature=HYDE_TEMPERATURE,
             return_full_text=False,
             pad_token_id=self.tokenizer.eos_token_id,
         )[0]["generated_text"]

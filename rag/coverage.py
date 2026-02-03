@@ -23,9 +23,9 @@ class CoverageSelector:
     def __init__(
         self,
         *,
-        epsilon: float = 0.01,
-        max_chunks: int = 8,
-        alpha: float = 0.5,
+        epsilon: float,
+        max_chunks: int,
+        alpha: float,
     ):
         """
         Args:
@@ -47,16 +47,6 @@ class CoverageSelector:
         candidates: List[Dict],
         emb_key: str = "dense_emb",
     ) -> List[Dict]:
-        """
-        Args:
-          query_emb: embedding of q0 (normalized)
-          candidates: list of chunks with embeddings
-          emb_key: key for embedding inside candidate dict
-
-        Returns:
-          selected chunks
-        """
-
         if not candidates:
             return []
 
@@ -116,16 +106,10 @@ class CoverageSelector:
         q: np.ndarray,
         embs: List[np.ndarray],
     ) -> float:
-        """
-        Hybrid coverage:
-          alpha * cosine(q, mean(embs))
-          + (1-alpha) * max_i cosine(q, emb_i)
-        """
         if not embs:
             return 0.0
 
         sims = [float(q @ e) for e in embs]
-
         max_sim = max(sims)
 
         mean_emb = np.mean(embs, axis=0)
