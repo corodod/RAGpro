@@ -27,7 +27,7 @@ backend = os.getenv("GEN_BACKEND", "cpu")
 device = "cuda" if backend == "cuda" else "cpu"
 
 GEN_TOP_K = 5
-USE_AGENT = False
+USE_AGENT = True#False
 # ---------- Build retriever ----------
 bm25 = BM25Retriever.load(INDEX_DIR)
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import shlex
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from rag.plan_schema import Plan, Step
 
@@ -30,9 +30,19 @@ LINE_SYSTEM = """
   RETRIEVE (subq1) -> EXTRACT_ANSWER (x) -> COMPOSE_QUERY -> RETRIEVE (subq2) -> SYNTHESIZE
 """.strip()
 
+REPAIR_SYSTEM = """
+Ты вывел план в неправильном формате.
+Нужно: ТОЛЬКО команды, по одной на строку.
+Без объяснений, без маркдауна, без ```.
+
+Проверь:
+- каждая строка начинается с операции (RETRIEVE/EXTRACT_ENTITIES/...)
+- в каждой строке есть out=<key>
+- последняя команда обязана быть SYNTHESIZE
+""".strip()
+
 
 def _parse_line(line: str) -> Dict[str, Any]:
-    # shlex handles quotes
     parts = shlex.split(line.strip())
     if not parts:
         return {}
@@ -71,10 +81,9 @@ def _to_step(idx: int, d: Dict[str, Any]) -> Step:
     if not op:
         raise ValueError(f"Unknown op: {d['op']}")
 
-    # small type coercions later in executor; keep strings here
     return Step(
         id=f"s{idx}",
-        op=op,          # type: ignore
+        op=op,  # type: ignore
         args=d["args"],
         out=d["out"],
     )
@@ -86,8 +95,53 @@ class LinePlanner:
         self.max_new_tokens = max_new_tokens
         self.debug = debug
 
+    def _gen(self, system: str, user: str) -> str:
+        return self.llm.generate_chat(
+            system=system,
+            user=user,
+            max_new_tokens=self.max_new_tokens,
+        ).strip()
+
+    def _parse_to_plan(self, question: str, txt: str) -> Optional[Plan]:
+        lines = [l.strip() for l in txt.splitlines() if l.strip()]
+        lines = [l for l in lines if not l.startswith("```")]
+
+        parsed: List[Dict[str, Any]] = []
+        bad = 0
+        for l in lines:
+            try:
+                parsed.append(_parse_line(l))
+            except Exception:
+                bad += 1
+                continue
+
+        if not parsed:
+            return None
+
+        steps = [_to_step(i + 1, d) for i, d in enumerate(parsed)]
+
+        if steps[-1].op != "synthesize":
+            steps.append(
+                Step(
+                    id=f"s{len(steps)+1}",
+                    op="synthesize",
+                    args={"question": question, "from": steps[-1].out, "max_evidence": "6"},
+                    out="answer",
+                )
+            )
+
+        # Валидация Plan может кинуть исключение — это ок, перехватим выше.
+        plan = Plan(steps=steps)
+
+        if self.debug:
+            print("[LinePlanner] Parsed lines:\n" + "\n".join(lines[:30]))
+            print(f"[LinePlanner] bad_lines={bad} ok_lines={len(parsed)}")
+            print("[LinePlanner] Plan:", plan.model_dump())
+
+        return plan
+
     def plan(self, question: str) -> Plan:
-        user = f"""
+        base_user = f"""
 Сгенерируй план команд для вопроса:
 
 {question}
@@ -104,36 +158,41 @@ RETRIEVE subq1 -> EXTRACT_ANSWER -> COMPOSE_QUERY -> RETRIEVE -> SYNTHESIZE
 RETRIEVE a -> RETRIEVE b -> UNION_HITS/INTERSECT_HITS -> SYNTHESIZE
 """.strip()
 
-        txt = self.llm.generate_chat(system=LINE_SYSTEM, user=user, max_new_tokens=self.max_new_tokens).strip()
+        last_txt = None
+        last_err = None
 
-        lines = [l.strip() for l in txt.splitlines() if l.strip()]
-        # remove accidental code fences
-        lines = [l for l in lines if not l.startswith("```")]
+        # ✅ FIX 4: retry / repair loop
+        for attempt in range(1, 4):  # 1 + 2 repair tries
+            if attempt == 1:
+                txt = self._gen(system=LINE_SYSTEM, user=base_user)
+            else:
+                repair_user = f"""
+Вот твой предыдущий вывод, он не распарсился/не прошёл валидацию:
 
-        parsed: List[Dict[str, Any]] = []
-        for l in lines:
+{last_txt}
+
+Ошибка/проблема:
+{last_err}
+
+Сгенерируй ИСПРАВЛЕННЫЙ план. Напоминаю: только команды, по одной на строку.
+""".strip()
+                txt = self._gen(system=REPAIR_SYSTEM, user=repair_user)
+
             try:
-                parsed.append(_parse_line(l))
-            except Exception:
-                # пропускаем плохую строку, но продолжаем
-                continue
+                plan = self._parse_to_plan(question, txt)
+                if plan is None:
+                    raise ValueError("No parsable lines produced")
+                return plan
+            except Exception as e:
+                last_txt = txt
+                last_err = repr(e)
+                if self.debug:
+                    print(f"[LinePlanner] attempt={attempt} failed: {e}")
 
-        if not parsed:
-            # fallback to trivial plan
-            parsed = [
-                {"op": "RETRIEVE", "out": "hits0", "args": {"query": question, "top_k": "20"}},
-                {"op": "SYNTHESIZE", "out": "answer", "args": {"question": question, "from": "hits0", "max_evidence": "6"}},
-            ]
-
+        # если всё совсем плохо — честный fallback
+        parsed = [
+            {"op": "RETRIEVE", "out": "hits0", "args": {"query": question, "top_k": "20"}},
+            {"op": "SYNTHESIZE", "out": "answer", "args": {"question": question, "from": "hits0", "max_evidence": "6"}},
+        ]
         steps = [_to_step(i + 1, d) for i, d in enumerate(parsed)]
-
-        # Ensure synthesize last
-        if steps[-1].op != "synthesize":
-            steps.append(Step(id=f"s{len(steps)+1}", op="synthesize", args={"question": question, "from": steps[-1].out, "max_evidence": "6"}, out="answer"))
-
-        plan = Plan(steps=steps)
-        if self.debug:
-            print("[LinePlanner] Raw lines:\n" + "\n".join(lines[:20]))
-            print("[LinePlanner] Plan:", plan.model_dump())
-
-        return plan
+        return Plan(steps=steps)

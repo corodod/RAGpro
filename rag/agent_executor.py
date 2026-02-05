@@ -112,35 +112,11 @@ def _dedup_hits_keep_order(hits: List[Dict]) -> List[Dict]:
     return out
 
 
-def _extract_entity_candidates_from_hits(hits: List[Dict], *, limit: int = 20) -> List[str]:
-    """
-    Use precomputed 'entities' field from chunks if present.
-    Fallback: try to parse [СУЩНОСТИ] prefix, but prefer field.
-    """
-    out: List[str] = []
-    seen = set()
-
-    for h in hits:
-        ents = h.get("entities")
-        if isinstance(ents, list):
-            for e in ents:
-                if not isinstance(e, str):
-                    continue
-                key = e.strip().lower()
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                out.append(e.strip())
-                if len(out) >= limit:
-                    return out
-    return out
-
-
 class PlanExecutorRetriever:
     """
-    Drop-in replacement for MultiHopRetriever:
+    Agent executor:
       - retrieve(question) -> List[chunk dicts]
-    Additionally stores last_answer and last_plan for debugging.
+    Stores last_answer, last_plan, last_state for debugging.
     """
 
     def __init__(
@@ -153,14 +129,12 @@ class PlanExecutorRetriever:
         debug: bool = False,
     ):
         self.base_retriever = base_retriever
-        # self.llm = generator
         self.llms = LLMBundle.from_single(generator)
 
         self.reranker = reranker
         self.cfg = cfg or ExecutorConfig()
         self.debug = debug
 
-        # self.planner = JSONPlanner(llm=generator, debug=debug)
         self.planner = LinePlanner(llm=self.llms.planner, debug=debug)
 
         # debug outputs
@@ -171,12 +145,10 @@ class PlanExecutorRetriever:
         # retrieval cache
         self._cache: Dict[Tuple[str, int], List[Dict]] = {}
 
-    # ------------------ core ops ------------------
+    # ------------------ helpers ------------------
 
     def _normalize_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LinePlanner отдаёт всё строками. Здесь приводим типы.
-        """
+        """LinePlanner отдаёт всё строками. Здесь приводим типы."""
         if not isinstance(args, dict):
             return {}
 
@@ -213,6 +185,7 @@ class PlanExecutorRetriever:
         return out
 
     def _clamp(self, v, lo, hi, default):
+        """Clamp v into [lo, hi]. If can't parse -> default. Keeps int/float type of default."""
         try:
             v = float(v)
         except Exception:
@@ -222,39 +195,61 @@ class PlanExecutorRetriever:
 
     def _guard_step(self, s, state: Dict[str, Any]) -> bool:
         """
-        1) Клэмпим опасные числа (top_k/max_fanout/max_entities/max_evidence/etc)
+        1) Клэмпим опасные числа через cfg-диапазоны
         2) Проверяем зависимости на наличие ключей в state
         """
         # ---- clamp ----
         if s.op == "retrieve":
             s.args["top_k"] = self._clamp(
-                s.args.get("top_k"), 1, 50, self.cfg.default_top_k
+                s.args.get("top_k"),
+                self.cfg.retrieve_topk_min,
+                self.cfg.retrieve_topk_max,
+                self.cfg.default_top_k,
             )
 
         elif s.op == "map_retrieve":
-            s.args["top_k"] = self._clamp(s.args.get("top_k"), 1, 30, 15)
+            s.args["top_k"] = self._clamp(
+                s.args.get("top_k"),
+                self.cfg.map_topk_min,
+                self.cfg.map_topk_max,
+                15,
+            )
             s.args["max_fanout"] = self._clamp(
-                s.args.get("max_fanout"), 1, 20, self.cfg.max_fanout
+                s.args.get("max_fanout"),
+                self.cfg.map_fanout_min,
+                self.cfg.map_fanout_max,
+                self.cfg.max_fanout,
             )
 
         elif s.op == "extract_entities":
-            s.args["max_entities"] = self._clamp(s.args.get("max_entities"), 1, 30, 20)
+            s.args["max_entities"] = self._clamp(
+                s.args.get("max_entities"),
+                self.cfg.entities_min,
+                self.cfg.entities_max,
+                self.cfg.entities_default,
+            )
 
         elif s.op == "filter_ce":
             s.args["threshold"] = float(
                 self._clamp(s.args.get("threshold"), 0.0, 1.0, self.cfg.ce_threshold)
             )
             s.args["top_per_entity"] = self._clamp(
-                s.args.get("top_per_entity"), 1, 3, self.cfg.top_per_entity
+                s.args.get("top_per_entity"),
+                self.cfg.ce_top_per_entity_min,
+                self.cfg.ce_top_per_entity_max,
+                self.cfg.top_per_entity,
             )
 
         elif s.op == "synthesize":
             s.args["max_evidence"] = self._clamp(
-                s.args.get("max_evidence"), 1, 10, self.cfg.max_evidence
+                s.args.get("max_evidence"),
+                self.cfg.evidence_min,
+                self.cfg.evidence_max,
+                self.cfg.max_evidence,
             )
 
         # ---- dependency checks ----
-        dep_keys = []
+        dep_keys: List[Optional[str]] = []
 
         if s.op in ("extract_entities", "extract_answer", "synthesize"):
             dep_keys.append(s.args.get("from"))
@@ -277,6 +272,8 @@ class PlanExecutorRetriever:
 
         return True
 
+    # ------------------ ops ------------------
+
     def _op_retrieve(self, *, query: str, top_k: int) -> List[Dict]:
         key = (query, int(top_k))
         if self.cfg.cache_enabled and key in self._cache:
@@ -290,12 +287,26 @@ class PlanExecutorRetriever:
             self._cache[key] = hits
         return hits
 
-    def _op_extract_entities(self, *, question: str, from_hits: List[Dict], max_entities: int) -> List[Dict]:
+    def _op_extract_entities(
+        self,
+        *,
+        question: str,
+        from_hits: List[Dict],
+        max_entities: int,
+    ) -> List[Dict]:
         # 1) из вопроса
-        ents = self.base_retriever.entity_extractor.extract(question) if self.base_retriever.entity_extractor else []
-        # 2) можно добавить из топ-чанков (опционально)
+        ents = (
+            self.base_retriever.entity_extractor.extract(question)
+            if self.base_retriever.entity_extractor
+            else []
+        )
+
+        # 2) опционально: можно добавить из top-чанков
         # for h in from_hits[:5]:
-        #     ents += self.base_retriever.entity_extractor.extract(h.get("title","") + " " + h.get("text",""))
+        #     ents += self.base_retriever.entity_extractor.extract(
+        #         (h.get("title","") or "") + " " + (h.get("text","") or "")
+        #     )
+
         # дедуп
         seen = set()
         out = []
@@ -316,9 +327,7 @@ class PlanExecutorRetriever:
         top_k: int,
         max_fanout: int,
     ) -> Dict[str, List[Dict]]:
-        """
-        Returns hits_by_entity: {entity -> hits}
-        """
+        """Returns hits_by_entity: {entity -> hits}"""
         hits_by: Dict[str, List[Dict]] = {}
         for row in rows[:max_fanout]:
             ent = (row.get("entity") or "").strip()
@@ -340,24 +349,25 @@ class PlanExecutorRetriever:
     ) -> List[Dict]:
         """
         For each entity, score candidate hits using cross-encoder
-        and keep those above threshold (or top1 if none above? configurable).
+        and keep those above threshold (or top1 if none above).
         Returns verified rows:
-          {entity, evidence_chunk_id, evidence_text, ce_score}
+          {entity, chunk_id, title, text, ce_score}
         """
         if self.reranker is None:
-            # Fallback: no CE => pass through top evidence per entity
             out = []
             for r in rows:
                 ent = (r.get("entity") or "").strip()
                 hits = hits_by_entity.get(ent) or []
                 for h in hits[:top_per_entity]:
-                    out.append({
-                        "entity": ent,
-                        "chunk_id": h.get("chunk_id"),
-                        "title": h.get("title", ""),
-                        "text": h.get("text", ""),
-                        "ce_score": None,
-                    })
+                    out.append(
+                        {
+                            "entity": ent,
+                            "chunk_id": h.get("chunk_id"),
+                            "title": h.get("title", ""),
+                            "text": h.get("text", ""),
+                            "ce_score": None,
+                        }
+                    )
             return out
 
         verified: List[Dict] = []
@@ -373,25 +383,29 @@ class PlanExecutorRetriever:
 
             q = query_template.format(entity=ent)
 
-            # score with CE
             cand = [dict(h) for h in hits]  # copy
             scored = self.reranker.score(q, cand)
             scored = sorted(scored, key=lambda x: x.get("ce_score", 0.0), reverse=True)
 
-            kept = [h for h in scored if h.get("ce_score", 0.0) >= threshold][:top_per_entity]
+            kept = [h for h in scored if h.get("ce_score", 0.0) >= threshold][
+                :top_per_entity
+            ]
 
-            # if none passed, keep top1 (optional behavior)
             if not kept and scored:
                 kept = scored[:1]
 
             for h in kept:
-                verified.append({
-                    "entity": ent,
-                    "chunk_id": h.get("chunk_id"),
-                    "title": h.get("title", ""),
-                    "text": h.get("text", ""),
-                    "ce_score": float(h.get("ce_score", 0.0)) if h.get("ce_score") is not None else None,
-                })
+                verified.append(
+                    {
+                        "entity": ent,
+                        "chunk_id": h.get("chunk_id"),
+                        "title": h.get("title", ""),
+                        "text": h.get("text", ""),
+                        "ce_score": float(h.get("ce_score", 0.0))
+                        if h.get("ce_score") is not None
+                        else None,
+                    }
+                )
 
         return verified
 
@@ -421,7 +435,6 @@ class PlanExecutorRetriever:
                     by_id[cid] = h
             sets.append(s)
         common = set.intersection(*sets) if sets else set()
-        # сохраним порядок: пройдём по первому списку
         out = []
         for h in lists[0]:
             cid = h.get("chunk_id")
@@ -430,7 +443,6 @@ class PlanExecutorRetriever:
         return out
 
     def _op_extract_answer(self, *, question: str, hits: List[Dict]) -> Dict[str, Any]:
-        # возьмём небольшой контекст: top-6
         ctx = self.llms.synthesizer.build_context(
             hits[: self.cfg.extract_answer_hits_top],
             max_chars=self.cfg.extract_answer_ctx_chars,
@@ -444,16 +456,23 @@ class PlanExecutorRetriever:
             '{"value": null, "chunk_id": null}'
         )
         user = f"Вопрос:\n{question}\n\nКонтекст:\n{ctx}\n\nJSON:"
-        txt = self.llms.extractor.generate_chat(system=system, user=user,  max_new_tokens=self.cfg.extract_answer_max_new_tokens).strip()
+        txt = (
+            self.llms.extractor.generate_chat(
+                system=system,
+                user=user,
+                max_new_tokens=self.cfg.extract_answer_max_new_tokens,
+            )
+            .strip()
+        )
 
-        # грубый парсинг json
         import json as _json
+
         raw = None
         try:
             raw = _json.loads(txt)
         except Exception:
             if "{" in txt and "}" in txt:
-                j = txt[txt.find("{"): txt.rfind("}") + 1]
+                j = txt[txt.find("{") : txt.rfind("}") + 1]
                 try:
                     raw = _json.loads(j)
                 except Exception:
@@ -472,10 +491,6 @@ class PlanExecutorRetriever:
         return {"value": val, "chunk_id": cid}
 
     def _op_compose_query(self, *, template: str, values: Dict[str, Any]) -> str:
-        """
-        Поддерживает template с любыми плейсхолдерами: {x}, {result_from_subq1}, и т.д.
-        values: dict ключ -> значение для format(**values)
-        """
         safe = {}
         for k, v in (values or {}).items():
             if v is None:
@@ -488,25 +503,23 @@ class PlanExecutorRetriever:
         try:
             return template.format(**safe).strip()
         except KeyError:
-            # fallback: если LLM вставил плейсхолдер, которого нет
-            # попробуем хотя бы {x}
             x = safe.get("x", "")
             return template.replace("{x}", x).strip() if x else ""
 
     def _op_synthesize(
-            self,
-            *,
-            question: str,
-            evidence: List[Dict],
-            max_evidence: int,
+        self,
+        *,
+        question: str,
+        evidence: List[Dict],
+        max_evidence: int,
     ) -> str:
         ev = (evidence or [])[:max_evidence]
 
-        # -----------------------------
-        # Case A: это обычные hits (нет поля "entity")
-        # -----------------------------
+        # Case A: hits
         if ev and "entity" not in ev[0]:
-            context = self.llms.synthesizer.build_context(ev, max_chars=self.cfg.synth_hits_ctx_chars)
+            context = self.llms.synthesizer.build_context(
+                ev, max_chars=self.cfg.synth_hits_ctx_chars
+            )
 
             system = (
                 "Отвечай строго по контексту.\n"
@@ -514,27 +527,24 @@ class PlanExecutorRetriever:
                 "Если ответа нет — скажи, что недостаточно информации.\n"
                 "Ответ 2–4 предложения, по-русски."
             )
-
             user = (
                 f"Вопрос:\n{question}\n\n"
                 f"Контекст:\n{context if context else 'NONE'}\n\n"
                 "Ответ:"
             )
+            return self.llms.synthesizer.generate_chat(
+                system=system,
+                user=user,
+                max_new_tokens=self.cfg.synth_hits_max_new_tokens,
+            ).strip()
 
-            return self.llms.synthesizer.generate_chat(system=system, user=user, max_new_tokens=self.cfg.synth_hits_max_new_tokens).strip()
-
-        # -----------------------------
-        # Case B: это evidence-rows (есть entity, chunk_id, text, ce_score)
-        # -----------------------------
+        # Case B: evidence rows
         blocks = []
         for i, row in enumerate(ev, start=1):
             ent = (row.get("entity") or "").strip()
             cid = (row.get("chunk_id") or "").strip()
             score = row.get("ce_score", None)
-
-            text = (row.get("text") or "").strip()
-            text = text[:800]
-
+            text = (row.get("text") or "").strip()[: self.cfg.evidence_text_max_chars]
             blocks.append(f"[E{i}] entity={ent} chunk_id={cid} ce_score={score}\n{text}")
 
         context = "\n\n".join(blocks).strip()
@@ -545,18 +555,21 @@ class PlanExecutorRetriever:
             "Если в evidence нет ответа — скажи, что недостаточно информации.\n"
             "Ответ 2–4 предложения, по-русски."
         )
-
         user = f"""
-    Вопрос:
-    {question}
+Вопрос:
+{question}
 
-    EVIDENCE:
-    {context if context else "NONE"}
+EVIDENCE:
+{context if context else "NONE"}
 
-    Сформируй ответ. Если возможно, упомяни сущности и опирайся на evidence.
-    """.strip()
+Сформируй ответ. Если возможно, упомяни сущности и опирайся на evidence.
+""".strip()
 
-        return self.llms.synthesizer.generate_chat(system=system, user=user, max_new_tokens=160).strip()
+        return self.llms.synthesizer.generate_chat(
+            system=system,
+            user=user,
+            max_new_tokens=self.cfg.synth_evidence_max_new_tokens,
+        ).strip()
 
     # ------------------ plan execution ------------------
 
@@ -565,48 +578,61 @@ class PlanExecutorRetriever:
         self.last_state = {}
         self.last_plan = None
 
+        # ✅ FIX 3: agent_enabled реально работает
+        if not self.cfg.agent_enabled:
+            if self.debug:
+                print("[Exec] agent_enabled=False -> fallback to base_retriever.retrieve")
+            hits = self.base_retriever.retrieve(question)
+            self.last_state = {"question": question, "hits0": hits}
+            return hits
+
         plan = self.planner.plan(question)
         self.last_plan = plan
 
         state: Dict[str, Any] = {"question": question}
-
         steps = plan.steps[: self.cfg.max_steps]
 
         for s in steps:
             s.args = self._normalize_args(s.args or {})
 
-            # guardrails: clamp + проверка зависимостей
             if not self._guard_step(s, state):
                 if self.debug:
-                    print(f"[Exec] skip step {s.id} op={s.op} out={s.out} args={s.args} (missing deps or unsafe args)")
+                    print(
+                        f"[Exec] skip step {s.id} op={s.op} out={s.out} args={s.args} "
+                        "(missing deps or unsafe args)"
+                    )
                 continue
 
             if self.debug:
                 print(f"[Exec] step {s.id} op={s.op} out={s.out} args={s.args}")
 
             if s.op == "retrieve":
-                # top_k = int(s.args.get("top_k") or self.cfg.default_top_k)
                 top_k = int(s.args["top_k"])
-                # 1) прямой query или main_query
                 query = s.args.get("query") or s.args.get("main_query")
-                # 2) query_from=<state_key>
+
                 if not query:
                     qk = s.args.get("query_from")
                     if qk:
                         query = state.get(qk)
-                # 3) если query — это строка, но совпадает с ключом state (LLM иногда так делает)
+
                 if isinstance(query, str) and query in state:
                     query = state.get(query)
+
                 query = query or question
                 state[s.out] = self._op_retrieve(query=str(query), top_k=top_k)
 
-
             elif s.op == "extract_entities":
                 src = s.args.get("from")
-                max_entities = int(s.args.get("max_entities") or 20)
+                max_entities = int(s.args.get("max_entities") or self.cfg.entities_default)
                 hits = state.get(src) if src else None
                 hits = hits if isinstance(hits, list) else []
-                state[s.out] = self._op_extract_entities(from_hits=hits, max_entities=max_entities)
+
+                # ✅ FIX 1: передаем question=
+                state[s.out] = self._op_extract_entities(
+                    question=question,
+                    from_hits=hits,
+                    max_entities=max_entities,
+                )
 
             elif s.op == "map_retrieve":
                 src = s.args.get("from")
@@ -648,7 +674,11 @@ class PlanExecutorRetriever:
                 max_evidence = int(s.args.get("max_evidence") or self.cfg.max_evidence)
                 evidence = state.get(src) if src else []
                 evidence = evidence if isinstance(evidence, list) else []
-                ans = self._op_synthesize(question=question, evidence=evidence, max_evidence=max_evidence)
+                ans = self._op_synthesize(
+                    question=question,
+                    evidence=evidence,
+                    max_evidence=max_evidence,
+                )
                 state[s.out] = ans
                 self.last_answer = ans
 
@@ -659,21 +689,20 @@ class PlanExecutorRetriever:
                 hits = hits if isinstance(hits, list) else []
                 state[s.out] = self._op_extract_answer(question=str(q), hits=hits)
 
-
             elif s.op == "compose_query":
                 template = s.args.get("template") or "{x}"
                 x_from = s.args.get("x_from")
                 x_obj = state.get(x_from) if x_from else None
-                # values для format: и "x", и имя ключа x_from (чтобы работало {result_from_subq1})
+
                 values = {"x": ""}
                 if x_from:
-                    values[x_from] = x_obj  # может быть dict {"value": ...}
+                    values[x_from] = x_obj
                     if isinstance(x_obj, dict):
                         values["x"] = x_obj.get("value") or ""
                     else:
                         values["x"] = x_obj or ""
-                state[s.out] = self._op_compose_query(template=template, values=values)
 
+                state[s.out] = self._op_compose_query(template=template, values=values)
 
             elif s.op in ("union_hits", "intersect_hits"):
                 from_arg = s.args.get("from") or ""
@@ -687,30 +716,27 @@ class PlanExecutorRetriever:
                 else:
                     state[s.out] = self._op_intersect_hits(lists)
 
-
             else:
                 raise ValueError(f"Unsupported op: {s.op}")
 
         self.last_state = state
 
-        # return candidates for UI: if we have a retrieve step, return it; else empty
-        # best effort: return "hits0" if exists
         hits = state.get("hits0")
         if isinstance(hits, list) and hits:
             return hits
 
-        # fallback: if evidence rows exist, return their chunks as candidates
         ev = state.get("evidence")
         if isinstance(ev, list) and ev:
-            # convert evidence rows to pseudo-hits for UI
             out = []
             for r in ev:
-                out.append({
-                    "chunk_id": r.get("chunk_id"),
-                    "title": r.get("title", ""),
-                    "text": r.get("text", ""),
-                    "ce_score": r.get("ce_score"),
-                })
+                out.append(
+                    {
+                        "chunk_id": r.get("chunk_id"),
+                        "title": r.get("title", ""),
+                        "text": r.get("text", ""),
+                        "ce_score": r.get("ce_score"),
+                    }
+                )
             return out
 
         return []

@@ -17,12 +17,14 @@ from transformers import (
 # backends / scenarios
 
 # model names
-GEN_MODEL_MAX = "Qwen/Qwen2.5-3B-Instruct"
+# GEN_MODEL_MAX = "Qwen/Qwen3-8B"
+# GEN_MODEL_MAX = "mistralai/Mistral-7B-Instruct-v0.2"
+GEN_MODEL_MAX = "Qwen/Qwen3-4B-Instruct-2507"
 GEN_MODEL_MIN = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
 # default generation params
 GEN_MAX_NEW_TOKENS = 120
-GEN_TEMPERATURE = 0.7
+GEN_TEMPERATURE = 0.0
 GEN_REPETITION_PENALTY = 1.12
 
 # tokenizer/model input limits
