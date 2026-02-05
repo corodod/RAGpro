@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,12 +23,16 @@ INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
 CHUNKS_PATH = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
 UI_PATH = PROJECT_ROOT / "ui" / "index.html"
 
-backend = os.getenv("GEN_BACKEND", "cpu")
+# ================= ENV / FLAGS =================
+backend = os.getenv("GEN_BACKEND", "cpu")  # "cpu" | "cuda"
 device = "cuda" if backend == "cuda" else "cpu"
 
-GEN_TOP_K = 5
-USE_AGENT = True#False
-# ---------- Build retriever ----------
+GEN_TOP_K = int(os.getenv("GEN_TOP_K", "5"))
+USE_AGENT = os.getenv("USE_AGENT", "1") in ("1", "true", "True", "yes", "YES")
+
+DEBUG = os.getenv("DEBUG", "1") in ("1", "true", "True", "yes", "YES")
+
+# ================= BUILD RETRIEVER =================
 bm25 = BM25Retriever.load(INDEX_DIR)
 
 cfg = RetrieverConfig()
@@ -52,28 +56,26 @@ base_retriever = Retriever(
     dense=dense,
     reranker=CrossEncoderReranker(
         model_name=cfg.cross_encoder_model_name,
-        device=device,  # или cfg.cross_encoder_device, но ты хочешь cpu/cuda динамически
+        device=device,  # динамически cpu/cuda
         batch_size=cfg.cross_encoder_batch_size,
         use_fp16=cfg.cross_encoder_use_fp16,
     ),
     rewriter=None,
     entity_extractor=None,
-    coverage_selector = CoverageSelector(
-                epsilon=cfg.coverage_epsilon,
-                max_chunks=cfg.coverage_max_chunks,
-                alpha=cfg.coverage_alpha,
-            ),
+    coverage_selector=CoverageSelector(
+        epsilon=cfg.coverage_epsilon,
+        max_chunks=cfg.coverage_max_chunks,
+        alpha=cfg.coverage_alpha,
+    ),
     config=cfg,
-    debug=True,
+    debug=DEBUG,
 )
 
 generator = AnswerGenerator(
     GeneratorConfig(
         backend=backend,
-        max_new_tokens=80,
-
+        max_new_tokens=int(os.getenv("GEN_MAX_NEW_TOKENS", "80")),
     ),
-    # model_name="Qwen/Qwen2.5-1.5B-Instruct",  # если у тебя есть такое поле
 )
 
 retriever = PlanExecutorRetriever(
@@ -81,18 +83,17 @@ retriever = PlanExecutorRetriever(
     generator=generator,
     reranker=base_retriever.reranker,
     cfg=ExecutorConfig(
-        max_steps=8,
-        default_top_k=20,
-        max_fanout=15,
-        ce_threshold=0.30,
-        top_per_entity=2,
-        max_evidence=6,
+        max_steps=int(os.getenv("AGENT_MAX_STEPS", "8")),
+        default_top_k=int(os.getenv("AGENT_TOP_K", "20")),
+        max_fanout=int(os.getenv("AGENT_MAX_FANOUT", "15")),
+        ce_threshold=float(os.getenv("AGENT_CE_THRESHOLD", "0.30")),
+        top_per_entity=int(os.getenv("AGENT_TOP_PER_ENTITY", "2")),
+        max_evidence=int(os.getenv("AGENT_MAX_EVIDENCE", "6")),
     ),
-    debug=True,
+    debug=DEBUG,
 )
 
-
-# ---------- FastAPI ----------
+# ================= FASTAPI =================
 app = FastAPI(title="RAGRPO Demo")
 app.add_middleware(
     CORSMiddleware,
@@ -110,12 +111,72 @@ class SearchResponse(BaseModel):
     question: str
     answer: str
     candidates: List[Dict[str, Any]]
+    debug: Optional[Dict[str, Any]] = None  # чтобы удобно смотреть пайплайн (опционально)
+
+
+def _print_top_chunks(candidates: List[Dict[str, Any]], top_k: int) -> None:
+    for i, c in enumerate(candidates[:top_k], start=1):
+        print(f"\n--- TOP {i} ---")
+        print(f"chunk_id: {c.get('chunk_id')}")
+        print(f"title: {c.get('title')}")
+        print(f"text: {(c.get('text') or '')[:300]}")
+
+
+def _collect_agent_debug() -> Dict[str, Any]:
+    dbg: Dict[str, Any] = {}
+
+    # Decomposition (L1)
+    if getattr(retriever, "last_decomp", None) is not None:
+        try:
+            dbg["decomposition"] = [it.model_dump() for it in retriever.last_decomp.items]
+        except Exception:
+            dbg["decomposition"] = "failed_to_dump"
+
+    # Compiled JSON (L2)
+    if getattr(retriever, "last_compiled", None) is not None:
+        try:
+            dbg["compiled_plan"] = retriever.last_compiled.model_dump()
+        except Exception:
+            dbg["compiled_plan"] = "failed_to_dump"
+
+    # DSL lines (translator)
+    if getattr(retriever, "last_dsl_lines", None) is not None:
+        dbg["dsl_lines"] = list(retriever.last_dsl_lines)
+
+    # Parsed Plan (executor plan)
+    if getattr(retriever, "last_plan", None) is not None:
+        try:
+            dbg["parsed_plan_steps"] = [
+                {"id": s.id, "op": s.op, "out": s.out, "args": s.args}
+                for s in retriever.last_plan.steps
+            ]
+        except Exception:
+            dbg["parsed_plan_steps"] = "failed_to_dump"
+
+    # Final state keys (what was produced)
+    if getattr(retriever, "last_state", None):
+        st = retriever.last_state
+        keys = {}
+        for k, v in st.items():
+            if isinstance(v, list):
+                keys[k] = f"list[{len(v)}]"
+            else:
+                keys[k] = type(v).__name__
+        dbg["final_state_keys"] = keys
+
+    # Final answer (agent)
+    if getattr(retriever, "last_answer", None):
+        dbg["agent_answer"] = retriever.last_answer
+
+    return dbg
 
 
 @app.post("/rag", response_model=SearchResponse)
 def search(req: SearchRequest):
+    question = (req.question or "").strip()
+
     print("\n================ REQUEST =================")
-    print(f"Question: {req.question}")
+    print(f"Question: {question}")
     print(f"Mode: {'AGENTIC RAG' if USE_AGENT else 'PLAIN RAG'}")
 
     # ================= RETRIEVAL =================
@@ -123,49 +184,59 @@ def search(req: SearchRequest):
 
     if USE_AGENT:
         print("[Retrieval] Using AGENT executor")
-
-        # 1️⃣ Agentic retrieve
-        candidates = retriever.retrieve(req.question)
-
+        candidates = retriever.retrieve(question)
         print(f"[Retrieval] Agent returned {len(candidates)} chunks")
 
-        # debug plan
-        if retriever.last_plan:
-            print("\n[Agent] Plan:")
-            for s in retriever.last_plan.steps:
-                print(f"  - {s.id}: {s.op} -> {s.out} | args={s.args}")
+        if DEBUG:
+            # debug: decomposition, compiled json, dsl, plan, state
+            dbg = _collect_agent_debug()
 
-        # debug state
-        if retriever.last_state:
-            print("\n[Agent] Final state keys:")
-            for k, v in retriever.last_state.items():
-                if isinstance(v, list):
-                    print(f"  - {k}: list[{len(v)}]")
+            if "decomposition" in dbg:
+                print("\n[Agent] Decomposition:")
+                if isinstance(dbg["decomposition"], list):
+                    for it in dbg["decomposition"]:
+                        print("  -", it)
                 else:
-                    print(f"  - {k}: {type(v).__name__}")
+                    print("  -", dbg["decomposition"])
+
+            if "compiled_plan" in dbg:
+                print("\n[Agent] Compiled plan (JSON):")
+                print(dbg["compiled_plan"])
+
+            if "dsl_lines" in dbg:
+                print("\n[Agent] DSL lines:")
+                for l in dbg["dsl_lines"]:
+                    print("  ", l)
+
+            if "parsed_plan_steps" in dbg:
+                print("\n[Agent] Parsed Plan:")
+                if isinstance(dbg["parsed_plan_steps"], list):
+                    for s in dbg["parsed_plan_steps"]:
+                        print(f"  - {s['id']}: {s['op']} -> {s['out']} | args={s['args']}")
+                else:
+                    print("  -", dbg["parsed_plan_steps"])
+
+            if "final_state_keys" in dbg:
+                print("\n[Agent] Final state keys:")
+                for k, v in dbg["final_state_keys"].items():
+                    print(f"  - {k}: {v}")
 
     else:
         print("[Retrieval] Using BASE retriever (no agent)")
-
-        # 1️⃣ Plain RAG retrieve
-        candidates = base_retriever.retrieve(req.question)
-
+        candidates = base_retriever.retrieve(question)
         print(f"[Retrieval] Retrieved {len(candidates)} chunks")
+        dbg = {}
 
     # ---- print TOP-K chunks ----
-    for i, c in enumerate(candidates[:GEN_TOP_K], start=1):
-        print(f"\n--- TOP {i} ---")
-        print(f"chunk_id: {c.get('chunk_id')}")
-        print(f"title: {c.get('title')}")
-        print(f"text: {(c.get('text') or '')[:300]}")
+    _print_top_chunks(candidates, GEN_TOP_K)
 
     # ================= GENERATION =================
     print("\n================ GENERATION =================")
 
-    answer = None
+    answer: Optional[str] = None
 
     if USE_AGENT:
-        answer = retriever.last_answer
+        answer = getattr(retriever, "last_answer", None)
         if answer:
             print("[Generation] Using answer produced by AGENT")
         else:
@@ -173,18 +244,22 @@ def search(req: SearchRequest):
 
     if not answer:
         top_chunks = candidates[:GEN_TOP_K]
-        answer = generator.generate(req.question, top_chunks)
+        answer = generator.generate(question, top_chunks)
 
     # ================= ANSWER =================
     print("\n================ ANSWER =================")
     print(answer)
     print("=========================================\n")
 
-    return {
-        "question": req.question,
-        "answer": answer,
-        "candidates": candidates,
-    }
+    # API debug payload (optional)
+    debug_payload = _collect_agent_debug() if (USE_AGENT and DEBUG) else None
+
+    return SearchResponse(
+        question=question,
+        answer=answer,
+        candidates=candidates,
+        debug=debug_payload,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)

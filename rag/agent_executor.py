@@ -9,8 +9,14 @@ from rag.reranker import CrossEncoderReranker
 from rag.generator import AnswerGenerator
 
 from rag.plan_schema import Plan
-from rag.line_planner import LinePlanner
+from rag.line_planner import LinePlanParser
 from rag.llm_bundle import LLMBundle
+
+from rag.decomposer import Decomposer, DecomposerConfig
+from rag.decomp_validator import validate_decomp_graph
+from rag.compiler import Compiler, CompilerConfig
+from rag.json_to_dsl import JsonToDslTranslator, JsonToDslConfig
+
 
 # --- agent executor ---
 AGENT_ENABLED = True
@@ -54,6 +60,7 @@ AGENT_SYNTH_HITS_MAX_NEW_TOKENS = 180
 
 AGENT_EVIDENCE_TEXT_MAX_CHARS = 800
 AGENT_SYNTH_EVIDENCE_MAX_NEW_TOKENS = 160
+
 
 @dataclass
 class ExecutorConfig:
@@ -135,12 +142,31 @@ class PlanExecutorRetriever:
         self.cfg = cfg or ExecutorConfig()
         self.debug = debug
 
-        self.planner = LinePlanner(llm=self.llms.planner, debug=debug)
+        # ---- new pipeline components ----
+        self.decomposer = Decomposer(
+            llm=self.llms.decomposer,
+            cfg=DecomposerConfig(max_questions=5, max_deps=2),
+            debug=debug,
+        )
+        self.compiler = Compiler(
+            llm=self.llms.compiler,
+            cfg=CompilerConfig(max_new_tokens=260),
+            debug=debug,
+        )
+        self.translator = JsonToDslTranslator(
+            cfg=JsonToDslConfig(top_k=self.cfg.default_top_k, max_evidence=self.cfg.max_evidence),
+            debug=debug,
+        )
+        self.dsl_parser = LinePlanParser(debug=debug)
 
         # debug outputs
         self.last_plan: Optional[Plan] = None
         self.last_answer: Optional[str] = None
         self.last_state: Dict[str, Any] = {}
+
+        self.last_decomp = None
+        self.last_compiled = None
+        self.last_dsl_lines: List[str] = []
 
         # retrieval cache
         self._cache: Dict[Tuple[str, int], List[Dict]] = {}
@@ -294,20 +320,12 @@ class PlanExecutorRetriever:
         from_hits: List[Dict],
         max_entities: int,
     ) -> List[Dict]:
-        # 1) из вопроса
         ents = (
             self.base_retriever.entity_extractor.extract(question)
             if self.base_retriever.entity_extractor
             else []
         )
 
-        # 2) опционально: можно добавить из top-чанков
-        # for h in from_hits[:5]:
-        #     ents += self.base_retriever.entity_extractor.extract(
-        #         (h.get("title","") or "") + " " + (h.get("text","") or "")
-        #     )
-
-        # дедуп
         seen = set()
         out = []
         for e in ents:
@@ -327,7 +345,6 @@ class PlanExecutorRetriever:
         top_k: int,
         max_fanout: int,
     ) -> Dict[str, List[Dict]]:
-        """Returns hits_by_entity: {entity -> hits}"""
         hits_by: Dict[str, List[Dict]] = {}
         for row in rows[:max_fanout]:
             ent = (row.get("entity") or "").strip()
@@ -347,12 +364,6 @@ class PlanExecutorRetriever:
         threshold: float,
         top_per_entity: int,
     ) -> List[Dict]:
-        """
-        For each entity, score candidate hits using cross-encoder
-        and keep those above threshold (or top1 if none above).
-        Returns verified rows:
-          {entity, chunk_id, title, text, ce_score}
-        """
         if self.reranker is None:
             out = []
             for r in rows:
@@ -371,7 +382,6 @@ class PlanExecutorRetriever:
             return out
 
         verified: List[Dict] = []
-
         for r in rows:
             ent = (r.get("entity") or "").strip()
             if not ent:
@@ -383,14 +393,11 @@ class PlanExecutorRetriever:
 
             q = query_template.format(entity=ent)
 
-            cand = [dict(h) for h in hits]  # copy
+            cand = [dict(h) for h in hits]
             scored = self.reranker.score(q, cand)
             scored = sorted(scored, key=lambda x: x.get("ce_score", 0.0), reverse=True)
 
-            kept = [h for h in scored if h.get("ce_score", 0.0) >= threshold][
-                :top_per_entity
-            ]
-
+            kept = [h for h in scored if h.get("ce_score", 0.0) >= threshold][:top_per_entity]
             if not kept and scored:
                 kept = scored[:1]
 
@@ -401,12 +408,9 @@ class PlanExecutorRetriever:
                         "chunk_id": h.get("chunk_id"),
                         "title": h.get("title", ""),
                         "text": h.get("text", ""),
-                        "ce_score": float(h.get("ce_score", 0.0))
-                        if h.get("ce_score") is not None
-                        else None,
+                        "ce_score": float(h.get("ce_score", 0.0)) if h.get("ce_score") is not None else None,
                     }
                 )
-
         return verified
 
     def _op_union_hits(self, lists: List[List[Dict]]) -> List[Dict]:
@@ -506,32 +510,19 @@ class PlanExecutorRetriever:
             x = safe.get("x", "")
             return template.replace("{x}", x).strip() if x else ""
 
-    def _op_synthesize(
-        self,
-        *,
-        question: str,
-        evidence: List[Dict],
-        max_evidence: int,
-    ) -> str:
+    def _op_synthesize(self, *, question: str, evidence: List[Dict], max_evidence: int) -> str:
         ev = (evidence or [])[:max_evidence]
 
         # Case A: hits
         if ev and "entity" not in ev[0]:
-            context = self.llms.synthesizer.build_context(
-                ev, max_chars=self.cfg.synth_hits_ctx_chars
-            )
-
+            context = self.llms.synthesizer.build_context(ev, max_chars=self.cfg.synth_hits_ctx_chars)
             system = (
                 "Отвечай строго по контексту.\n"
                 "Не выдумывай фактов.\n"
                 "Если ответа нет — скажи, что недостаточно информации.\n"
                 "Ответ 2–4 предложения, по-русски."
             )
-            user = (
-                f"Вопрос:\n{question}\n\n"
-                f"Контекст:\n{context if context else 'NONE'}\n\n"
-                "Ответ:"
-            )
+            user = f"Вопрос:\n{question}\n\nКонтекст:\n{context if context else 'NONE'}\n\nОтвет:"
             return self.llms.synthesizer.generate_chat(
                 system=system,
                 user=user,
@@ -548,7 +539,6 @@ class PlanExecutorRetriever:
             blocks.append(f"[E{i}] entity={ent} chunk_id={cid} ce_score={score}\n{text}")
 
         context = "\n\n".join(blocks).strip()
-
         system = (
             "Ты отвечаешь строго по доказательствам (EVIDENCE).\n"
             "Не выдумывай фактов.\n"
@@ -577,8 +567,10 @@ EVIDENCE:
         self.last_answer = None
         self.last_state = {}
         self.last_plan = None
+        self.last_decomp = None
+        self.last_compiled = None
+        self.last_dsl_lines = []
 
-        # ✅ FIX 3: agent_enabled реально работает
         if not self.cfg.agent_enabled:
             if self.debug:
                 print("[Exec] agent_enabled=False -> fallback to base_retriever.retrieve")
@@ -586,7 +578,34 @@ EVIDENCE:
             self.last_state = {"question": question, "hits0": hits}
             return hits
 
-        plan = self.planner.plan(question)
+        # ---- L1: Decompose ----
+        decomp = self.decomposer.decompose(question)
+        self.last_decomp = decomp
+
+        ok, err = validate_decomp_graph(decomp, max_questions=5, max_deps=2)
+        if not ok:
+            if self.debug:
+                print("[Decomp] invalid -> fallback single question:", err)
+            # fallback: single Q1
+            from rag.decomp_schema import DecompGraph, DecompItem
+            decomp = DecompGraph(items=[DecompItem(id="Q1", text=question, deps=[], slot=None)])
+            self.last_decomp = decomp
+
+        # ---- L2: Compile ----
+        compiled = self.compiler.compile(question, decomp)
+        self.last_compiled = compiled
+
+        # ---- Translate JSON -> DSL lines ----
+        dsl_lines = self.translator.to_lines(compiled)
+        self.last_dsl_lines = dsl_lines
+
+        if self.debug:
+            print("\n[Agent2Stage] DSL lines:")
+            for l in dsl_lines:
+                print("  ", l)
+
+        # ---- Parse DSL -> Plan ----
+        plan = self.dsl_parser.parse_to_plan(question, "\n".join(dsl_lines))
         self.last_plan = plan
 
         state: Dict[str, Any] = {"question": question}
@@ -626,8 +645,6 @@ EVIDENCE:
                 max_entities = int(s.args.get("max_entities") or self.cfg.entities_default)
                 hits = state.get(src) if src else None
                 hits = hits if isinstance(hits, list) else []
-
-                # ✅ FIX 1: передаем question=
                 state[s.out] = self._op_extract_entities(
                     question=question,
                     from_hits=hits,
@@ -721,9 +738,11 @@ EVIDENCE:
 
         self.last_state = state
 
-        hits = state.get("hits0")
-        if isinstance(hits, list) and hits:
-            return hits
+        # Return best available hits (prefer final_hits)
+        for key in ("final_hits", "hits0"):
+            v = state.get(key)
+            if isinstance(v, list) and v:
+                return v
 
         ev = state.get("evidence")
         if isinstance(ev, list) and ev:
@@ -738,5 +757,11 @@ EVIDENCE:
                     }
                 )
             return out
+
+        # last resort: any hits*
+        for k, v in state.items():
+            if k.startswith("h") or k.startswith("hits"):
+                if isinstance(v, list) and v:
+                    return v
 
         return []
