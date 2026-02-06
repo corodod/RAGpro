@@ -1,7 +1,7 @@
 # rag/dense.py
 import json
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import numpy as np
 import faiss
@@ -14,13 +14,26 @@ class DenseRetriever:
         chunks_path: Path,
         index_path: Path,
         meta_path: Path,
-        model_name: str = "intfloat/multilingual-e5-large",
-        embedding_dim: int = 1024,
+        *,
+        model_name: str,
+        embedding_dim: int,
+        query_prefix: str,
+        passage_prefix: str,
+        default_search_top_k: int,
+        default_rerank_top_k: int,
+        default_return_embeddings: bool,
     ):
         self.chunks_path = chunks_path
         self.index_path = index_path
         self.meta_path = meta_path
+
         self.embedding_dim = embedding_dim
+        self.query_prefix = query_prefix
+        self.passage_prefix = passage_prefix
+
+        self.default_search_top_k = default_search_top_k
+        self.default_rerank_top_k = default_rerank_top_k
+        self.default_return_embeddings = default_return_embeddings
 
         self.model = SentenceTransformer(model_name)
         self.index = None
@@ -55,19 +68,18 @@ class DenseRetriever:
     # -----------------------------
 
     def encode_query(self, query: str) -> np.ndarray:
-        """
-        Returns normalized query embedding (1D float32).
-        Compatible with CoverageSelector.
-        """
-        q = f"query: {query}"
+        q = self.query_prefix + query
         qv = self.model.encode([q], convert_to_numpy=True).astype("float32")
         qv = self._normalize_2d(qv)
-        return qv[0]  # 1D
+        return qv[0]
+
+    def encode_passage(self, text: str) -> np.ndarray:
+        p = self.passage_prefix + text
+        v = self.model.encode([p], convert_to_numpy=True).astype("float32")
+        v = self._normalize_2d(v)
+        return v[0]
 
     def get_chunk_embeddings(self, chunk_ids: List[str]) -> Dict[str, np.ndarray]:
-        """
-        Returns normalized embeddings for given chunk_ids as {chunk_id: emb(1D)}.
-        """
         if self.index is None:
             raise RuntimeError("DenseRetriever index is not loaded. Call dense.load().")
 
@@ -82,12 +94,13 @@ class DenseRetriever:
     # Retrieval
     # -----------------------------
 
-    def search(self, query: str, top_k: int = 10) -> List[Dict]:
+    def search(self, query: str, top_k: Optional[int] = None) -> List[Dict]:
         if self.index is None:
             raise RuntimeError("DenseRetriever index is not loaded. Call dense.load().")
 
-        qv = self.encode_query(query).reshape(1, -1)  # 2D for FAISS
+        top_k = self.default_search_top_k if top_k is None else top_k
 
+        qv = self.encode_query(query).reshape(1, -1)
         scores, idxs = self.index.search(qv, top_k)
 
         out = []
@@ -100,7 +113,6 @@ class DenseRetriever:
                     "title": self.titles[i],
                     "text": self.texts[i],
                     "dense_score": float(score),
-                    # dense_emb here is optional; search() обычно не надо для coverage
                 }
             )
         return out
@@ -109,18 +121,19 @@ class DenseRetriever:
         self,
         query: str,
         candidate_chunk_ids: List[str],
-        top_k: int = 10,
-        return_embeddings: bool = True,
+        *,
+        top_k: Optional[int] = None,
+        return_embeddings: Optional[bool] = None,
     ) -> List[Dict]:
-        """
-        Rerank given candidate chunk_ids by cosine similarity with query.
-        Returns top_k candidates.
-
-        If return_embeddings=True, adds:
-          - dense_emb: normalized 1D embedding for coverage-aware selection
-        """
         if self.index is None:
             raise RuntimeError("DenseRetriever index is not loaded. Call dense.load().")
+
+        top_k = self.default_rerank_top_k if top_k is None else top_k
+        return_embeddings = (
+            self.default_return_embeddings
+            if return_embeddings is None
+            else return_embeddings
+        )
 
         positions = [self._id_map[cid] for cid in candidate_chunk_ids if cid in self._id_map]
         if not positions:
@@ -130,7 +143,7 @@ class DenseRetriever:
         cand_vecs = self._normalize_2d(cand_vecs)
 
         qv = self.encode_query(query)  # 1D normalized
-        scores = cand_vecs @ qv  # (n,)
+        scores = cand_vecs @ qv
 
         best = np.argsort(-scores)[: min(top_k, len(scores))]
 
@@ -147,19 +160,8 @@ class DenseRetriever:
             }
 
             if return_embeddings:
-                # store normalized 1D embedding (needed by CoverageSelector)
                 item["dense_emb"] = cand_vecs[rank_i]
 
             out.append(item)
 
         return out
-
-    def encode_passage(self, text: str) -> np.ndarray:
-        """
-        Encode arbitrary document-like text (HyDE passage).
-        Returns normalized 1D embedding.
-        """
-        p = f"passage: {text}"
-        v = self.model.encode([p], convert_to_numpy=True).astype("float32")
-        v = self._normalize_2d(v)
-        return v[0]

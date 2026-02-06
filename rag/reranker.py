@@ -7,10 +7,11 @@ from sentence_transformers import CrossEncoder
 class CrossEncoderReranker:
     def __init__(
         self,
-        model_name: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
-        device: str = "cpu",
-        batch_size: int = 32,
-        use_fp16: bool = True,
+        *,
+        model_name: str,
+        device: str,
+        batch_size: int,
+        use_fp16: bool,
     ):
         self.device = device
         self.batch_size = batch_size
@@ -35,7 +36,6 @@ class CrossEncoderReranker:
 
         with torch.no_grad():
             if self.use_fp16:
-                # 🔥 новый правильный autocast API
                 with torch.amp.autocast("cuda"):
                     scores = self.model.predict(
                         pairs,

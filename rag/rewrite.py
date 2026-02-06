@@ -2,11 +2,23 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+
+# =========================
+# HYPERPARAMETERS
+# =========================
+
+# (оставляем только "технические" значения по умолчанию,
+#  но всё важное будет задаваться из retriever через конструктор)
+
+REWRITE_MIN_LINE_LEN = 10
+REWRITE_MAX_NEW_TOKENS = 96
+REWRITE_DO_SAMPLE = False
+REWRITE_TEMPERATURE = 0.0
 
 
 # ============================================================
@@ -40,27 +52,32 @@ class QueryRewriter:
     """
     Stateless query rewriting module.
 
-    Responsibilities:
-      - generate paraphrases via LLM
-      - filter semantic drift via cosine similarity
-      - return clean rewrite list
-
-    No cache. No lexicons. No heuristics.
+    Everything is configured from outside (RetrieverConfig).
     """
 
     def __init__(
         self,
         *,
-        llm_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
-        llm_device: str = "cpu",
+        llm_model_name: str,
+        embedder_model_name: str,
+        llm_device: str = "cpu",  # "cpu" | "cuda"
+        max_new_tokens: int = REWRITE_MAX_NEW_TOKENS,
+        do_sample: bool = REWRITE_DO_SAMPLE,
+        temperature: float = REWRITE_TEMPERATURE,
+        min_line_len: int = REWRITE_MIN_LINE_LEN,
         n_rewrites: int = 2,
         min_cosine: float = 0.75,
     ):
         self.n_rewrites = n_rewrites
         self.min_cosine = min_cosine
 
+        self.max_new_tokens = max_new_tokens
+        self.do_sample = do_sample
+        self.temperature = temperature
+        self.min_line_len = min_line_len
+
         # embedder for cosine filter
-        self.embedder = SentenceTransformer("intfloat/multilingual-e5-small")
+        self.embedder = SentenceTransformer(embedder_model_name)
 
         # LLM
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -81,7 +98,7 @@ class QueryRewriter:
 
     # --------------------------------------------------------
 
-    def _build_prompt(self, query: str) -> str:
+    def _build_prompt(self, query: str, *, n_rewrites: int) -> str:
         return f"""
 Ты — модуль переформулировки ПОИСКОВЫХ запросов для Википедии.
 
@@ -89,14 +106,14 @@ class QueryRewriter:
 {query}
 
 Задача:
-Переформулируй вопрос ДВУМЯ способами, чтобы его было легче найти в Википедии.
+Переформулируй вопрос {n_rewrites} способами, чтобы его было легче найти в Википедии.
 
 Правила:
 - не отвечай на вопрос
 - не добавляй факты
 - не расширяй смысл
 - используй нейтральную энциклопедическую лексику
-- выведи РОВНО ДВЕ строки
+- выведи РОВНО {n_rewrites} строк
 - без нумерации
 - без кавычек
 - без комментариев
@@ -107,7 +124,7 @@ class QueryRewriter:
         for l in text.splitlines():
             l = normalize_text(l)
             l = re.sub(r"^[\-\*\d\.\)\s]+", "", l)
-            if len(l) < 10:
+            if len(l) < self.min_line_len:
                 continue
             if l.startswith(("первый вариант", "второй вариант", "вариант")):
                 continue
@@ -131,24 +148,18 @@ class QueryRewriter:
 
     # --------------------------------------------------------
 
-    def rewrite(
-            self,
-            query: str,
-            *,
-            n_rewrites: int,
-            min_cosine: float,
-    ) -> List[str]:
+    def rewrite(self, query: str) -> List[str]:
         query_n = normalize_text(query)
         if not query_n:
             return []
 
-        prompt = self._build_prompt(query_n)
+        prompt = self._build_prompt(query_n, n_rewrites=self.n_rewrites)
 
         out = self.pipe(
             prompt,
-            max_new_tokens=96,
-            do_sample=False,
-            temperature=0.0,
+            max_new_tokens=self.max_new_tokens,
+            do_sample=self.do_sample,
+            temperature=self.temperature,
             return_full_text=False,
             pad_token_id=self.tokenizer.eos_token_id,
         )[0]["generated_text"]
@@ -156,4 +167,4 @@ class QueryRewriter:
         rewrites = self._parse_output(out)
         rewrites = [r for r in rewrites if r != query_n]
         rewrites = self._filter_by_similarity(query_n, rewrites)
-        return rewrites[:n_rewrites]
+        return rewrites[: self.n_rewrites]

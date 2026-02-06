@@ -2,53 +2,34 @@
 from __future__ import annotations
 
 from typing import List, Set
-import spacy
 import re
+import spacy
 
 
 class EntityExtractor:
     """
     Retrieval-oriented entity / concept extractor for RU Wiki QA.
-
-    Goal:
-    extract referential, self-sufficient entities
-    (not roles, not temporal fillers, not generic object types)
     """
 
     def __init__(
         self,
-        model: str = "ru_core_news_lg",
-        allowed_labels: Set[str] | None = None,
-        min_len: int = 3,
-        max_tokens: int = 6,
+        *,
+        model: str,
+        allowed_labels: Set[str],
+        min_len: int,
+        max_tokens: int,
     ):
         self.nlp = spacy.load(model)
-
-        self.allowed_labels = allowed_labels or {
-            "PERSON",
-            "ORG",
-            "GPE",
-            "LOC",
-            "EVENT",
-            "WORK_OF_ART",
-        }
-
+        self.allowed_labels = set(allowed_labels)
         self.min_len = min_len
         self.max_tokens = max_tokens
         self.abbrev_re = re.compile(r"\b[А-ЯЁ]{2,6}\b")
 
-    # --------------------------------------------------
-
     def _is_retrieval_entity(self, span: List[spacy.tokens.Token]) -> bool:
-        """
-        Structural filter: decide if span is retrieval-useful.
-        """
-
-        # too short
+        # too short / too long
         if len(span) == 0 or len(span) > self.max_tokens:
             return False
 
-        # head token
         head = span[-1]
 
         # dependency-based filtering
@@ -76,8 +57,6 @@ class EntityExtractor:
 
         return False
 
-    # --------------------------------------------------
-
     def extract(self, text: str) -> List[str]:
         doc = self.nlp(text)
 
@@ -94,17 +73,12 @@ class EntityExtractor:
             seen.add(key)
             entities.append(val)
 
-        # ==================================================
-        # 1️⃣ spaCy NER (always trusted)
-        # ==================================================
+        # 1) spaCy NER
         for ent in doc.ents:
             if ent.label_ in self.allowed_labels:
                 add(ent.text)
 
-        # ==================================================
-        # 2️⃣ POS-based noun phrases (filtered!)
-        # Pattern: ADJ* + NOUN+
-        # ==================================================
+        # 2) POS-based noun phrases: ADJ* + NOUN+
         tokens = list(doc)
         i = 0
         while i < len(tokens):
@@ -128,19 +102,12 @@ class EntityExtractor:
             else:
                 i = start + 1
 
-        # ==================================================
-        # 3️⃣ Capitalized multi-word spans
-        # ==================================================
-        caps = re.findall(
-            r"(?:[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)+)",
-            text,
-        )
+        # 3) Capitalized multi-word spans
+        caps = re.findall(r"(?:[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)+)", text)
         for c in caps:
             add(c)
 
-        # ==================================================
-        # 4️⃣ Abbreviations
-        # ==================================================
+        # 4) Abbreviations
         for abbr in self.abbrev_re.findall(text):
             add(abbr)
 
