@@ -129,10 +129,8 @@ Dense retrieval применяется:
 
 Используемая метрика покрытия:
 
-$$
-\text{coverage} = \alpha \cdot \cos(q, \mathrm{mean}(C))
-+ (1 - \alpha) \cdot \max_i \cos(q, c_i)
-$$
+**`coverage = α · cos(q, mean(C)) + (1 − α) · maxi cos(q, ci)`**
+
 
 Где:
 - **q** — эмбеддинг запроса,
