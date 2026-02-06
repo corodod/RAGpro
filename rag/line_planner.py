@@ -41,6 +41,8 @@ def _to_step(idx: int, d: Dict[str, Any]) -> Step:
         "COMPOSE_QUERY": "compose_query",
         "UNION_HITS": "union_hits",
         "INTERSECT_HITS": "intersect_hits",
+        "EXTRACT_ENTITIES_FROM_HITS": "extract_entities_from_hits",  # ✅ NEW
+        "INTERSECT_VALUES": "intersect_values",  # ✅ NEW
     }
     op = op_map.get(d["op"])
     if not op:

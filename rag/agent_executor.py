@@ -220,10 +220,41 @@ class PlanExecutorRetriever:
         v = max(lo, min(hi, v))
         return int(v) if isinstance(default, int) else v
 
+    def _op_extract_entities_from_hits(self, *, hits: List[Dict], max_entities: int) -> List[Dict]:
+        # берём текст из top-k чанков и гоняем NER
+        text = "\n".join([(h.get("text") or "") for h in hits[:10]])
+        ents = self.base_retriever.entity_extractor.extract(text) if self.base_retriever.entity_extractor else []
+        # extractor у тебя возвращает строки; если там не только PERSON — лучше фильтровать на уровне extractor
+        seen = set()
+        out = []
+        for e in ents:
+            k = e.strip().lower()
+            if k and k not in seen:
+                seen.add(k)
+                out.append({"entity": e.strip()})
+            if len(out) >= max_entities:
+                break
+        return out
+
+    def _op_intersect_values(self, *, a: List[Dict], b: List[Dict]) -> List[Dict]:
+        sa = {(r.get("entity") or "").strip().lower() for r in a if (r.get("entity") or "").strip()}
+        sb = {(r.get("entity") or "").strip().lower() for r in b if (r.get("entity") or "").strip()}
+        inter = sa & sb
+        # вернуть в стабильном порядке (по a)
+        out = []
+        used = set()
+        for r in a:
+            name = (r.get("entity") or "").strip()
+            k = name.lower()
+            if k in inter and k not in used:
+                out.append({"entity": name})
+                used.add(k)
+        return out
+
     def _guard_step(self, s, state: Dict[str, Any]) -> bool:
         """
-        1) Клэмпим опасные числа через cfg-диапазоны
-        2) Проверяем зависимости на наличие ключей в state
+        1) clamp опасных чисел через cfg-диапазоны
+        2) dependency check: все нужные ключи должны быть в state
         """
         # ---- clamp ----
         if s.op == "retrieve":
@@ -290,11 +321,22 @@ class PlanExecutorRetriever:
         if s.op == "compose_query":
             dep_keys.append(s.args.get("x_from"))
 
-        # if s.op == "retrieve":
-        #     dep_keys.append(s.args.get("query_from"))
         if s.op == "retrieve":
+            # retrieve может быть либо query="...", либо query_from=...
             if not (s.args.get("query") or s.args.get("main_query")):
                 dep_keys.append(s.args.get("query_from"))
+
+        if s.op == "extract_entities_from_hits":
+            dep_keys.append(s.args.get("from"))
+
+        if s.op == "intersect_values":
+            dep_keys.append(s.args.get("a_from"))
+            dep_keys.append(s.args.get("b_from"))
+
+        if s.op in ("union_hits", "intersect_hits"):
+            from_arg = s.args.get("from") or ""
+            keys = [k.strip() for k in from_arg.split(",") if k.strip()]
+            dep_keys += keys
 
         for k in dep_keys:
             if k and k not in state:
@@ -420,13 +462,24 @@ class PlanExecutorRetriever:
     def _op_union_hits(self, lists: List[List[Dict]]) -> List[Dict]:
         out: List[Dict] = []
         seen = set()
-        for hits in lists:
-            for h in hits:
+
+        if not lists:
+            return out
+
+        max_len = max((len(x) for x in lists), default=0)
+
+        # round-robin: 0-й элемент из каждого списка, потом 1-й, ...
+        for i in range(max_len):
+            for hits in lists:
+                if i >= len(hits):
+                    continue
+                h = hits[i]
                 cid = h.get("chunk_id")
                 if not cid or cid in seen:
                     continue
                 seen.add(cid)
                 out.append(h)
+
         return out
 
     def _op_intersect_hits(self, lists: List[List[Dict]]) -> List[Dict]:
@@ -591,10 +644,30 @@ EVIDENCE:
             if self.debug:
                 print("[Decomp] invalid:", err)
 
-            # если LLM разнес на 6+ вопросов — попросим сжать
-            if err and "too many questions" in err.lower():
+            err_l = (err or "").lower()
+
+            def _is_and_question(q: str) -> bool:
+                ql = (q or "").lower()
+                return ("кто из" in ql or "какие из" in ql) and (
+                            " и " in ql or " одновременно " in ql or " также " in ql)
+
+            need_retry = False
+            if "too many questions" in err_l:
+                need_retry = True
+            if "defined but not used" in err_l:
+                need_retry = True
+            if _is_and_question(question):
+                # если AND-вопрос, но модель попыталась делать deps/slot — перегенерим
+                if any(it.slot for it in decomp.items) or any(it.deps for it in decomp.items):
+                    need_retry = True
+
+            if need_retry:
                 decomp2 = self.decomposer.decompose(
-                    f"{question}\n\nВАЖНО: уложись в 2 под-вопроса (A и B), без slot."
+                    f"{question}\n\nВАЖНО:\n"
+                    f"- Если вопрос-пересечение (кто из ... и ...), сделай РОВНО 2 независимых под-вопроса.\n"
+                    f"- НЕ используй slot.\n"
+                    f"- deps оставь пустыми.\n"
+                    f"- НЕ добавляй третий вопрос типа 'кто общий участник'."
                 )
                 ok2, err2 = validate_decomp_graph(decomp2, max_questions=5, max_deps=2)
                 if ok2:
@@ -602,7 +675,6 @@ EVIDENCE:
                     ok, err = ok2, err2
                     self.last_decomp = decomp
 
-            # если всё ещё невалидно — только тогда fallback
             if not ok:
                 if self.debug:
                     print("[Decomp] invalid -> fallback single question:", err)
@@ -668,6 +740,21 @@ EVIDENCE:
                     from_hits=hits,
                     max_entities=max_entities,
                 )
+            elif s.op == "extract_entities_from_hits":
+                src = s.args.get("from")
+                max_entities = int(s.args.get("max_entities") or self.cfg.entities_default)
+                hits = state.get(src) if src else []
+                hits = hits if isinstance(hits, list) else []
+                state[s.out] = self._op_extract_entities_from_hits(hits=hits, max_entities=max_entities)
+
+            elif s.op == "intersect_values":
+                a_from = s.args.get("a_from")
+                b_from = s.args.get("b_from")
+                a = state.get(a_from) if a_from else []
+                b = state.get(b_from) if b_from else []
+                a = a if isinstance(a, list) else []
+                b = b if isinstance(b, list) else []
+                state[s.out] = self._op_intersect_values(a=a, b=b)
 
             elif s.op == "map_retrieve":
                 src = s.args.get("from")

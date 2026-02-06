@@ -81,11 +81,10 @@ def validate_decomp_graph(
             if s not in slot_to_q:
                 return False, f"{it.id}: uses slot {{{s}}} but no question defines slot={s}"
 
-    # optional: slot must be used somewhere
+    # slot must be used somewhere (MAKE IT FATAL)
     for slot, qid in slot_to_q.items():
         if slot not in used_slots:
-            # not fatal, but helps quality; treat as warning -> not failing
-            pass
+            return False, f"{qid}: slot '{slot}' defined but not used"
 
     # strong check: if a question uses {slot}, ensure it depends (directly or indirectly) on the slot-producer
     # Build ancestor closure for each node.

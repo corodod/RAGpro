@@ -71,7 +71,7 @@ Q<n>: ... | dep=Qk[,Qm...] | slot=<name>
 
 
 _LINE_RE = re.compile(r"^(Q\d+)\s*:\s*(.+)$", re.IGNORECASE)
-
+_QID_RE = re.compile(r"^Q\d+$", re.IGNORECASE)
 
 def _parse_decomp_lines(txt: str) -> Optional[DecompGraph]:
     lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
@@ -94,7 +94,9 @@ def _parse_decomp_lines(txt: str) -> Optional[DecompGraph]:
         for p in parts[1:]:
             if p.lower().startswith("dep="):
                 dep_val = p.split("=", 1)[1].strip()
-                deps = [d.strip().upper() for d in dep_val.split(",") if d.strip()]
+                raw_deps = [d.strip().upper() for d in dep_val.split(",") if d.strip()]
+                # ✅ keep only real question ids
+                deps = [d for d in raw_deps if _QID_RE.match(d)]
             elif p.lower().startswith("slot="):
                 slot_val = p.split("=", 1)[1].strip()
                 slot = slot_val if slot_val else None

@@ -15,6 +15,8 @@ OpName = Literal[
     "union_hits",
     "intersect_hits",
     "synthesize",
+    "extract_entities_from_hits",  # ✅ NEW
+    "intersect_values",            # ✅ NEW
 ]
 
 
