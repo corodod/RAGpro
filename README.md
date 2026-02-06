@@ -1,12 +1,13 @@
 # Retrieval-Augmented Generation с Coverage-Aware и Multi-Hop Retrieval
 
+<img width="1203" height="640" alt="image_2026-02-07_01-58-30" src="https://github.com/user-attachments/assets/c63a0e94-785a-4fbc-adb5-2420747cce56" />
+
+
+
 Данный проект представляет собой расширенную реализацию Retrieval-Augmented Generation (RAG), в которой основной акцент сделан на **качестве retrieval-слоя, управляемости пайплайна и устойчивости получаемого контекста**.  
 В отличие от базовых RAG-реализаций, проект фокусируется не на генерации как таковой, а на систематическом улучшении этапов поиска, отбора и агрегации документов.
 
 Архитектура сочетает классические методы информационного поиска, dense-подходы на базе sentence-transformers и LLM-усиленные техники (rewriting, planning), формируя **многоступенчатый и модульный retrieval-пайплайн**, пригодный для research- и engineering-задач.
-
-<img width="707" height="632" alt="image_2026-02-07_01-42-43" src="https://github.com/user-attachments/assets/37bee39a-1a82-4769-8d63-abe1f377d22f" />
-
 
 ---
 
