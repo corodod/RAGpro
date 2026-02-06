@@ -56,68 +56,93 @@ class JsonToDslTranslator:
 
         nodes = _toposort_nodes(compiled.nodes)
 
-        # ✅ NEW: id -> out_hits mapping (to fix synth_from=Qn)
+        # id -> out_hits (если synth_from вдруг пришёл как "Q2")
         id_to_hits: Dict[str, str] = {n.id: n.out_hits for n in nodes if n.id and n.out_hits}
 
-        for n in nodes:
-            q = n.question
+        # удобный доступ по id
+        by_id: Dict[str, CompiledNode] = {n.id: n for n in nodes if n.id}
 
-            used_slots = _SLOT_RE.findall(q or "")
+        for n in nodes:
+            q = (n.question or "").strip()
+
+            # --- Нормализация consumes_slot ---
+            # Варианты:
+            #   consumes_slot = None
+            #   consumes_slot = "x"
+            #   consumes_slot = "home_club"   (LLM так иногда делает)  -> это значит x_from=home_club
+            forced_x_from: Optional[str] = None
+            if n.consumes_slot:
+                cs = n.consumes_slot.strip()
+                if cs and cs != "x":
+                    forced_x_from = cs
+                    n.consumes_slot = "x"
+                elif cs == "x":
+                    n.consumes_slot = "x"
+                else:
+                    n.consumes_slot = None
+
+            used_slots = _SLOT_RE.findall(q)
+
+            # Если в тексте есть {slot} — это точно slot-aware consumer
             if used_slots and n.consumes_slot != "x":
                 n.consumes_slot = "x"
 
-            # 1) Retrieve for this node
+            # --- Решаем, нужен ли COMPOSE_QUERY ---
+            # Нужно если:
+            #   - consumes_slot == "x" (явно сказано компилятором/нормализацией)
+            # И при этом можем вычислить x_from хоть как-то (forced / placeholder / deps).
             if n.consumes_slot == "x":
-                # 1) Determine which slot is being consumed (prefer placeholder name)
-                used_slots = _SLOT_RE.findall(q or "")
-
+                # 1) x_from приоритеты
                 x_from: Optional[str] = None
 
-                # Case A: question explicitly references {slot} (best signal)
-                if len(used_slots) == 1:
+                # A) если LLM дал конкретный слот в consumes_slot (home_club), мы его сохранили в forced_x_from
+                if forced_x_from:
+                    x_from = forced_x_from
+
+                # B) если в тексте есть ровно один {slot}
+                if not x_from and len(used_slots) == 1:
                     x_from = used_slots[0]
 
-                # Case B: no/ambiguous placeholder -> infer from deps (producer with produces_slot)
+                # C) иначе пытаемся вывести из deps: ищем dep-узел который produces_slot/out_slot
                 if not x_from:
                     for dep_id in (n.deps or []):
-                        dep = next((m for m in nodes if m.id == dep_id), None)
-                        if dep and dep.produces_slot:
-                            # producer writes slot into state under dep.out_slot or dep.produces_slot
+                        dep = by_id.get(dep_id)
+                        if dep and (dep.out_slot or dep.produces_slot):
                             x_from = dep.out_slot or dep.produces_slot
                             break
 
-                # Final fallback (won't pass guard unless state has "x", but keeps behavior explicit)
+                # D) последний fallback
                 x_from = x_from or "x"
 
+                # 2) template: заменяем {любая_переменная} -> {x}
                 template = _SLOT_RE.sub("{x}", q)
-                # если placeholder-ов нет вообще, то нечего подставлять -> добавляем {x}
-                if "{x}" not in template:
-                    # мягко: убираем "данного/этого ..." (опционально), а потом добавляем x
-                    # можешь оставить только добавление "{x}" если не хочешь лезть в текст
-                    template = (template.rstrip(" ?.!") + " {x}").strip()
-                qkey = f"q_{n.out_hits}"
 
+                # 3) КРИТИЧНО: если в тексте вообще не было {slot}, то после sub там не появится {x}.
+                # Тогда добавляем {x} в конец (твой "спасательный" кусок).
+                if "{x}" not in template:
+                    template = (template.rstrip(" ?.!") + " {x}").strip()
+
+                qkey = f"q_{n.out_hits}"
                 lines.append(f'COMPOSE_QUERY out={qkey} template="{template}" x_from={x_from}')
                 lines.append(f"RETRIEVE out={n.out_hits} query_from={qkey} top_k={self.cfg.top_k}")
             else:
+                # обычный retrieve
                 lines.append(f'RETRIEVE out={n.out_hits} query="{q}" top_k={self.cfg.top_k}')
 
-            # 2) Slot extraction if needed
+            # Slot extraction if needed
             if n.produces_slot:
                 slot_key = n.out_slot or n.produces_slot
                 lines.append(f'EXTRACT_ANSWER out={slot_key} from={n.out_hits} question="{q}"')
 
         # ---------------- MERGE / SYNTH_FROM ----------------
 
-        # Start with compiler-provided synth_from
         synth_from = (compiled.synth_from or "hits0").strip()
 
-        # ✅ FIX A: if synth_from mistakenly refers to node id (Q2), map it to hits key
+        # FIX A: synth_from мог прийти как node id (Q2)
         if _QID_RE.match(synth_from) and synth_from in id_to_hits:
             synth_from = id_to_hits[synth_from]
 
-        # ✅ FIX B: if final is not provided but we have multiple hit-lists,
-        # union everything into final_hits so synthesize has best evidence pool.
+        # FIX B: если final отсутствует — объединяем все hits
         if not compiled.final:
             hit_keys = [n.out_hits for n in nodes if n.out_hits]
             if len(hit_keys) >= 2:
@@ -128,7 +153,7 @@ class JsonToDslTranslator:
             else:
                 synth_from = "hits0"
 
-        # If final exists, respect it
+        # Respect compiled.final if present
         if compiled.final and compiled.final.merge:
             merge_keys = compiled.final.merge
             out_key = compiled.final.out or "final_hits"
@@ -138,7 +163,6 @@ class JsonToDslTranslator:
                 lines.append(f"UNION_HITS out={out_key} from={','.join(merge_keys)}")
             synth_from = out_key
 
-        # 4) Final synthesize
         max_ev = compiled.max_evidence or self.cfg.max_evidence
         lines.append(
             f'SYNTHESIZE out=answer question="{compiled.original_question}" from={synth_from} max_evidence={max_ev}'

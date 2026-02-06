@@ -132,8 +132,8 @@ class Compiler:
                     compiled = CompiledPlan(**raw)
                     print("[COMPILER] compiled.synth_from =", repr(compiled.synth_from))
                     # compiled = self._strip_unused_slots(compiled)
-                    compiled = self._infer_consumes_from_deps(compiled)
-                    compiled = self._normalize_consumes_slot(compiled)
+                    # compiled = self._infer_consumes_from_deps(compiled)
+                    # compiled = self._normalize_consumes_slot(compiled)
                     compiled = self._ensure_all_nodes_present(compiled, graph)
                     return compiled
                 except Exception as e:
