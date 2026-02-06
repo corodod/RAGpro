@@ -49,7 +49,7 @@ Dense retrieval применяется:
 Для улучшения recall и устойчивости retrieval используется query rewriting.
 
 - Модель rewriting:
-  - Qwen/Qwen2.5-3B-Instruct (если доступен мощный GPU)
+  - Qwen/Qwen3-4B-Instruct-2507 (если доступен мощный GPU)
   - TinyLlama/TinyLlama-1.1B-Chat-v1.0 (fallback для слабых устройств)
 
 Механизм:
