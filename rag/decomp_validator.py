@@ -105,8 +105,11 @@ def validate_decomp_graph(
         anc = build_anc(it.id)
         for s in _extract_slots(it.text):
             producer = slot_to_q.get(s)
-            if producer and producer != it.id and producer not in anc and it.deps:
-                # If it has deps but doesn't include producer, it's suspicious.
+            if producer and producer != it.id and producer not in anc:
                 return False, f"{it.id}: uses {{{s}}} but does not depend on producer {producer}"
+
+            # if producer and producer != it.id and producer not in anc and it.deps:
+            #     # If it has deps but doesn't include producer, it's suspicious.
+            #     return False, f"{it.id}: uses {{{s}}} but does not depend on producer {producer}"
 
     return True, None

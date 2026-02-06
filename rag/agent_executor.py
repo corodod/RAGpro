@@ -289,8 +289,11 @@ class PlanExecutorRetriever:
         if s.op == "compose_query":
             dep_keys.append(s.args.get("x_from"))
 
+        # if s.op == "retrieve":
+        #     dep_keys.append(s.args.get("query_from"))
         if s.op == "retrieve":
-            dep_keys.append(s.args.get("query_from"))
+            if not (s.args.get("query") or s.args.get("main_query")):
+                dep_keys.append(s.args.get("query_from"))
 
         for k in dep_keys:
             if k and k not in state:

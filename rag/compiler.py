@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from rag.decomp_schema import DecompGraph
-from rag.compiled_plan_schema import CompiledPlan
+from rag.compiled_plan_schema import CompiledPlan, CompiledNode
 from rag.generator import AnswerGenerator
 
 
@@ -129,7 +129,11 @@ class Compiler:
             raw = self._loads_json(txt)
             if isinstance(raw, dict):
                 try:
-                    return CompiledPlan(**raw)
+                    compiled = CompiledPlan(**raw)
+                    print("[COMPILER] compiled.synth_from =", repr(compiled.synth_from))
+                    compiled = self._ensure_all_nodes_present(compiled, graph)
+                    return compiled
+                    # return CompiledPlan(**raw)
                 except Exception as e:
                     last_txt = txt
                     last_err = repr(e)
@@ -156,3 +160,42 @@ class Compiler:
             synth_from="hits0",
             max_evidence=6,
         )
+
+    def _ensure_all_nodes_present(self, compiled: CompiledPlan, graph: DecompGraph) -> CompiledPlan:
+        want_ids = [it.id for it in (graph.items or []) if it.id]
+        have_ids = {n.id for n in (compiled.nodes or [])}
+
+        missing = [qid for qid in want_ids if qid not in have_ids]
+        if not missing:
+            return compiled
+
+        used_outs = {n.out_hits for n in compiled.nodes}
+        next_idx = 0
+
+        for qid in missing:
+            it = next((x for x in graph.items if x.id == qid), None)
+            if not it:
+                continue
+
+            while True:
+                out_hits = f"hits_extra{next_idx}"
+                next_idx += 1
+                if out_hits not in used_outs:
+                    used_outs.add(out_hits)
+                    break
+
+            consumes = "x" if ("{" in (it.text or "") and "}" in (it.text or "")) else None
+
+            compiled.nodes.append(
+                CompiledNode(
+                    id=qid,
+                    question=it.text,
+                    deps=it.deps,
+                    produces_slot=it.slot,
+                    consumes_slot=consumes,
+                    out_hits=out_hits,
+                    out_slot=it.slot,
+                )
+            )
+
+        return compiled

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
+import re
 
+_QID_RE = re.compile(r"^Q\d+$", re.IGNORECASE)
 
 class CompiledNode(BaseModel):
     id: str = Field(..., description="Q1..Qn")
@@ -41,6 +43,7 @@ class CompiledPlan(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> "CompiledPlan":
+        print("[VALIDATOR] CompiledPlan._validate called, synth_from=", repr(self.synth_from))
         if not self.nodes:
             raise ValueError("CompiledPlan.nodes empty")
         ids = [n.id for n in self.nodes]
@@ -49,4 +52,14 @@ class CompiledPlan(BaseModel):
         outs = [n.out_hits for n in self.nodes]
         if len(set(outs)) != len(outs):
             raise ValueError("duplicate out_hits")
+
+        # ✅ NEW: synth_from must reference state key, not node id
+        sf = (self.synth_from or "").strip()
+        if _QID_RE.match(sf):
+            raise ValueError("synth_from must be a state key (hits*/final_hits), not a node id like Q2")
+
+        allowed = set(outs) | {"final_hits", "hits0"}
+        if sf and sf not in allowed:
+            raise ValueError(f"synth_from='{sf}' must be one of {sorted(allowed)}")
+
         return self
