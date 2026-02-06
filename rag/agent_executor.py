@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from rag.decomp_schema import DecompGraph, DecompItem
 from rag.retriever import Retriever
 from rag.reranker import CrossEncoderReranker
 from rag.generator import AnswerGenerator
@@ -588,11 +589,25 @@ EVIDENCE:
         ok, err = validate_decomp_graph(decomp, max_questions=5, max_deps=2)
         if not ok:
             if self.debug:
-                print("[Decomp] invalid -> fallback single question:", err)
-            # fallback: single Q1
-            from rag.decomp_schema import DecompGraph, DecompItem
-            decomp = DecompGraph(items=[DecompItem(id="Q1", text=question, deps=[], slot=None)])
-            self.last_decomp = decomp
+                print("[Decomp] invalid:", err)
+
+            # если LLM разнес на 6+ вопросов — попросим сжать
+            if err and "too many questions" in err.lower():
+                decomp2 = self.decomposer.decompose(
+                    f"{question}\n\nВАЖНО: уложись в 2 под-вопроса (A и B), без slot."
+                )
+                ok2, err2 = validate_decomp_graph(decomp2, max_questions=5, max_deps=2)
+                if ok2:
+                    decomp = decomp2
+                    ok, err = ok2, err2
+                    self.last_decomp = decomp
+
+            # если всё ещё невалидно — только тогда fallback
+            if not ok:
+                if self.debug:
+                    print("[Decomp] invalid -> fallback single question:", err)
+                decomp = DecompGraph(items=[DecompItem(id="Q1", text=question, deps=[], slot=None)])
+                self.last_decomp = decomp
 
         # ---- L2: Compile ----
         compiled = self.compiler.compile(question, decomp)
