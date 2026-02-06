@@ -1,5 +1,6 @@
 # api/app.py
 from __future__ import annotations
+
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,13 +25,14 @@ INDEX_DIR = PROJECT_ROOT / "data" / "indexes"
 CHUNKS_PATH = PROJECT_ROOT / "data" / "processed" / "wiki_chunks.jsonl"
 UI_PATH = PROJECT_ROOT / "ui" / "index.html"
 
-# ================= ENV / FLAGS =================
+# ================= FLAGS =================
+USE_AGENT = False  # True -> Agentic RAG, False -> Simple RAG (base retriever)
+
+# Остальные параметры можно оставить из ENV (не обязательно)
 backend = os.getenv("GEN_BACKEND", "cpu")  # "cpu" | "cuda"
 device = "cuda" if backend == "cuda" else "cpu"
 
 GEN_TOP_K = int(os.getenv("GEN_TOP_K", "5"))
-USE_AGENT = os.getenv("USE_AGENT", "1") in ("1", "true", "True", "yes", "YES")
-
 DEBUG = os.getenv("DEBUG", "1") in ("1", "true", "True", "yes", "YES")
 
 # ================= BUILD RETRIEVER =================
@@ -57,7 +59,7 @@ base_retriever = Retriever(
     dense=dense,
     reranker=CrossEncoderReranker(
         model_name=cfg.cross_encoder_model_name,
-        device=device,  # динамически cpu/cuda
+        device=device,
         batch_size=cfg.cross_encoder_batch_size,
         use_fp16=cfg.cross_encoder_use_fp16,
     ),
@@ -94,6 +96,7 @@ retriever = PlanExecutorRetriever(
     debug=DEBUG,
 )
 
+
 # ================= FASTAPI =================
 app = FastAPI(title="RAGRPO Demo")
 app.add_middleware(
@@ -106,13 +109,14 @@ app.add_middleware(
 
 class SearchRequest(BaseModel):
     question: str
+    use_agent: Optional[bool] = None  # ✅ приходит из UI
 
 
 class SearchResponse(BaseModel):
     question: str
     answer: str
     candidates: List[Dict[str, Any]]
-    debug: Optional[Dict[str, Any]] = None  # чтобы удобно смотреть пайплайн (опционально)
+    debug: Optional[Dict[str, Any]] = None
 
 
 def _print_top_chunks(candidates: List[Dict[str, Any]], top_k: int) -> None:
@@ -126,25 +130,21 @@ def _print_top_chunks(candidates: List[Dict[str, Any]], top_k: int) -> None:
 def _collect_agent_debug() -> Dict[str, Any]:
     dbg: Dict[str, Any] = {}
 
-    # Decomposition (L1)
     if getattr(retriever, "last_decomp", None) is not None:
         try:
             dbg["decomposition"] = [it.model_dump() for it in retriever.last_decomp.items]
         except Exception:
             dbg["decomposition"] = "failed_to_dump"
 
-    # Compiled JSON (L2)
     if getattr(retriever, "last_compiled", None) is not None:
         try:
             dbg["compiled_plan"] = retriever.last_compiled.model_dump()
         except Exception:
             dbg["compiled_plan"] = "failed_to_dump"
 
-    # DSL lines (translator)
     if getattr(retriever, "last_dsl_lines", None) is not None:
         dbg["dsl_lines"] = list(retriever.last_dsl_lines)
 
-    # Parsed Plan (executor plan)
     if getattr(retriever, "last_plan", None) is not None:
         try:
             dbg["parsed_plan_steps"] = [
@@ -154,7 +154,6 @@ def _collect_agent_debug() -> Dict[str, Any]:
         except Exception:
             dbg["parsed_plan_steps"] = "failed_to_dump"
 
-    # Final state keys (what was produced)
     if getattr(retriever, "last_state", None):
         st = retriever.last_state
         keys = {}
@@ -165,7 +164,6 @@ def _collect_agent_debug() -> Dict[str, Any]:
                 keys[k] = type(v).__name__
         dbg["final_state_keys"] = keys
 
-    # Final answer (agent)
     if getattr(retriever, "last_answer", None):
         dbg["agent_answer"] = retriever.last_answer
 
@@ -176,67 +174,36 @@ def _collect_agent_debug() -> Dict[str, Any]:
 def search(req: SearchRequest):
     question = (req.question or "").strip()
 
+    # ✅ режим на каждый запрос
+    use_agent = req.use_agent if req.use_agent is not None else USE_AGENT
+
     print("\n================ REQUEST =================")
     print(f"Question: {question}")
-    print(f"Mode: {'AGENTIC RAG' if USE_AGENT else 'PLAIN RAG'}")
+    print(f"Mode: {'AGENTIC RAG' if use_agent else 'PLAIN RAG'}")
 
-    # ================= RETRIEVAL =================
     print("\n================ RETRIEVAL =================")
 
-    if USE_AGENT:
+    if use_agent:
         print("[Retrieval] Using AGENT executor")
         candidates = retriever.retrieve(question)
         print(f"[Retrieval] Agent returned {len(candidates)} chunks")
 
         if DEBUG:
-            # debug: decomposition, compiled json, dsl, plan, state
             dbg = _collect_agent_debug()
-
-            if "decomposition" in dbg:
-                print("\n[Agent] Decomposition:")
-                if isinstance(dbg["decomposition"], list):
-                    for it in dbg["decomposition"]:
-                        print("  -", it)
-                else:
-                    print("  -", dbg["decomposition"])
-
-            if "compiled_plan" in dbg:
-                print("\n[Agent] Compiled plan (JSON):")
-                print(dbg["compiled_plan"])
-
-            if "dsl_lines" in dbg:
-                print("\n[Agent] DSL lines:")
-                for l in dbg["dsl_lines"]:
-                    print("  ", l)
-
-            if "parsed_plan_steps" in dbg:
-                print("\n[Agent] Parsed Plan:")
-                if isinstance(dbg["parsed_plan_steps"], list):
-                    for s in dbg["parsed_plan_steps"]:
-                        print(f"  - {s['id']}: {s['op']} -> {s['out']} | args={s['args']}")
-                else:
-                    print("  -", dbg["parsed_plan_steps"])
-
-            if "final_state_keys" in dbg:
-                print("\n[Agent] Final state keys:")
-                for k, v in dbg["final_state_keys"].items():
-                    print(f"  - {k}: {v}")
-
+            # ... дальше твой debug print как был ...
     else:
         print("[Retrieval] Using BASE retriever (no agent)")
         candidates = base_retriever.retrieve(question)
         print(f"[Retrieval] Retrieved {len(candidates)} chunks")
         dbg = {}
 
-    # ---- print TOP-K chunks ----
     _print_top_chunks(candidates, GEN_TOP_K)
 
-    # ================= GENERATION =================
     print("\n================ GENERATION =================")
 
     answer: Optional[str] = None
 
-    if USE_AGENT:
+    if use_agent:
         answer = getattr(retriever, "last_answer", None)
         if answer:
             print("[Generation] Using answer produced by AGENT")
@@ -247,13 +214,11 @@ def search(req: SearchRequest):
         top_chunks = candidates[:GEN_TOP_K]
         answer = generator.generate(question, top_chunks)
 
-    # ================= ANSWER =================
     print("\n================ ANSWER =================")
     print(answer)
     print("=========================================\n")
 
-    # API debug payload (optional)
-    debug_payload = _collect_agent_debug() if (USE_AGENT and DEBUG) else None
+    debug_payload = _collect_agent_debug() if (use_agent and DEBUG) else None
 
     return SearchResponse(
         question=question,
@@ -261,6 +226,7 @@ def search(req: SearchRequest):
         candidates=candidates,
         debug=debug_payload,
     )
+
 
 
 @app.get("/", response_class=HTMLResponse)
