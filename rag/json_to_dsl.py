@@ -90,6 +90,11 @@ class JsonToDslTranslator:
                 x_from = x_from or "x"
 
                 template = _SLOT_RE.sub("{x}", q)
+                # если placeholder-ов нет вообще, то нечего подставлять -> добавляем {x}
+                if "{x}" not in template:
+                    # мягко: убираем "данного/этого ..." (опционально), а потом добавляем x
+                    # можешь оставить только добавление "{x}" если не хочешь лезть в текст
+                    template = (template.rstrip(" ?.!") + " {x}").strip()
                 qkey = f"q_{n.out_hits}"
 
                 lines.append(f'COMPOSE_QUERY out={qkey} template="{template}" x_from={x_from}')

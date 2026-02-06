@@ -9,7 +9,7 @@ from typing import Optional
 from rag.decomp_schema import DecompGraph
 from rag.compiled_plan_schema import CompiledPlan, CompiledNode
 from rag.generator import AnswerGenerator
-
+import re
 
 COMPILER_SYSTEM = """
 Ты — Compiler для Agentic RAG.
@@ -131,9 +131,11 @@ class Compiler:
                 try:
                     compiled = CompiledPlan(**raw)
                     print("[COMPILER] compiled.synth_from =", repr(compiled.synth_from))
+                    # compiled = self._strip_unused_slots(compiled)
+                    compiled = self._infer_consumes_from_deps(compiled)
+                    compiled = self._normalize_consumes_slot(compiled)
                     compiled = self._ensure_all_nodes_present(compiled, graph)
                     return compiled
-                    # return CompiledPlan(**raw)
                 except Exception as e:
                     last_txt = txt
                     last_err = repr(e)
@@ -199,3 +201,59 @@ class Compiler:
             )
 
         return compiled
+
+    def _strip_unused_slots(self, compiled: CompiledPlan) -> CompiledPlan:
+        # 1) слоты, которые реально встречаются как {slot} в тексте
+        used_by_placeholder = set()
+        for n in compiled.nodes:
+            for m in re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", n.question or ""):
+                used_by_placeholder.add(m)
+
+        # 2) producer-узлы, которые нужны, потому что кто-то consumes_slot="x" и зависит от них
+        needed_producer_ids = set()
+        by_id = {n.id: n for n in compiled.nodes}
+        for n in compiled.nodes:
+            if n.consumes_slot == "x" and n.deps:
+                for dep_id in n.deps:
+                    if dep_id in by_id:
+                        needed_producer_ids.add(dep_id)
+
+        for n in compiled.nodes:
+            slot = n.out_slot or n.produces_slot
+            if not slot:
+                continue
+
+            # keep if:
+            # - слот явно используется в {slot}
+            # - или узел является producer для consumer с consumes_slot="x"
+            if slot in used_by_placeholder or n.id in needed_producer_ids:
+                continue
+
+            # иначе можно сносить как реально неиспользуемый
+            n.produces_slot = None
+            n.out_slot = None
+
+        return compiled
+
+    def _normalize_consumes_slot(self, compiled: CompiledPlan) -> CompiledPlan:
+        for n in compiled.nodes:
+            # любой non-empty consumes_slot трактуем как "x"
+            if n.consumes_slot:
+                n.consumes_slot = "x"
+        return compiled
+
+    def _infer_consumes_from_deps(self, compiled: CompiledPlan) -> CompiledPlan:
+        by_id = {n.id: n for n in compiled.nodes}
+
+        for n in compiled.nodes:
+            if n.consumes_slot:  # уже есть
+                continue
+            # если в deps есть producer со slot -> делаем consumer
+            for dep_id in (n.deps or []):
+                dep = by_id.get(dep_id)
+                if dep and (dep.produces_slot or dep.out_slot):
+                    n.consumes_slot = "x"
+                    break
+
+        return compiled
+
