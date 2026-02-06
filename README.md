@@ -5,6 +5,9 @@
 
 Архитектура сочетает классические методы информационного поиска, dense-подходы на базе sentence-transformers и LLM-усиленные техники (rewriting, planning), формируя **многоступенчатый и модульный retrieval-пайплайн**, пригодный для research- и engineering-задач.
 
+<img width="707" height="632" alt="image_2026-02-07_01-42-43" src="https://github.com/user-attachments/assets/37bee39a-1a82-4769-8d63-abe1f377d22f" />
+
+
 ---
 
 ## 1. Обзор применённых техник
