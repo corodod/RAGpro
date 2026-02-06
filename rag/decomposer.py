@@ -8,9 +8,7 @@ from typing import List, Optional
 
 from rag.decomp_schema import DecompGraph, DecompItem
 from rag.generator import AnswerGenerator
-'''
-Если вопрос про “X, который/которое …” и затем спрашивается свойство/участник X (“кто руководил X”, “где произошло X”, “кто создал X”), сначала задай под-вопрос “Что такое X?” и сохрани ответ в slot.
-'''
+
 DECOMP_SYSTEM = """
 Ты — Decomposer для Agentic RAG.
 Твоя задача: разложить пользовательский вопрос на небольшой граф под-вопросов (DAG), чтобы по нему можно было найти ответ в поисковом корпусе.

@@ -18,16 +18,6 @@ from rag.retriever import Retriever, RetrieverConfig
 from rag.agent_executor import PlanExecutorRetriever, ExecutorConfig
 
 
-
-import rag, pydantic
-print("[DEBUG] rag package:", rag.__file__)
-print("[DEBUG] pydantic version:", pydantic.__version__)
-
-from rag import compiled_plan_schema, json_to_dsl, compiler
-print("[DEBUG] compiled_plan_schema:", compiled_plan_schema.__file__)
-print("[DEBUG] json_to_dsl:", json_to_dsl.__file__)
-print("[DEBUG] compiler:", compiler.__file__)
-
 # ================= PATHS =================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INDEX_DIR = PROJECT_ROOT / "data" / "indexes"

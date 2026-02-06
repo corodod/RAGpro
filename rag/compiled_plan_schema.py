@@ -44,22 +44,48 @@ class CompiledPlan(BaseModel):
     @model_validator(mode="after")
     def _validate(self) -> "CompiledPlan":
         print("[VALIDATOR] CompiledPlan._validate called, synth_from=", repr(self.synth_from))
+
         if not self.nodes:
             raise ValueError("CompiledPlan.nodes empty")
+
         ids = [n.id for n in self.nodes]
         if len(set(ids)) != len(ids):
             raise ValueError("duplicate node.id")
+
         outs = [n.out_hits for n in self.nodes]
         if len(set(outs)) != len(outs):
             raise ValueError("duplicate out_hits")
 
-        # ✅ NEW: synth_from must reference state key, not node id
-        sf = (self.synth_from or "").strip()
+        # ---- normalize synth_from ----
+        sf_raw = (self.synth_from or "").strip()
+        sf = sf_raw
+
+        # common LLM variants -> canonical keys
+        sf_l = sf.lower().replace("-", "_").replace(" ", "")
+        if sf_l in ("final", "finalhits", "final_hit", "finalhits0"):
+            sf = "final_hits"
+        elif sf_l == "final_hits":
+            sf = "final_hits"
+
+        # If final exists, allow "final" meaning "final.out"
+        if self.final and (sf_l == "final" or sf == "final_hits"):
+            # if final.out is set, prefer it
+            if getattr(self.final, "out", None):
+                sf = self.final.out
+
+        # ✅ synth_from must reference state key, not node id like Q2
         if _QID_RE.match(sf):
             raise ValueError("synth_from must be a state key (hits*/final_hits), not a node id like Q2")
 
         allowed = set(outs) | {"final_hits", "hits0"}
+
+        # If final exists, also allow final.out as synth_from (it can be non-default)
+        if self.final and getattr(self.final, "out", None):
+            allowed.add(self.final.out)
+
         if sf and sf not in allowed:
             raise ValueError(f"synth_from='{sf}' must be one of {sorted(allowed)}")
 
+        # write back normalized value
+        self.synth_from = sf
         return self
